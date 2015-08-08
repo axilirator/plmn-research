@@ -1,0 +1,100 @@
+\chapter{Aftenposten case study}
+
+    %Show OsmocomBB can be used.
+    At the end of 2014, the \comp{Aftenposten}, one of Norway's largest
+    newspaper, wrote an article on the presence of \gls{imsi}-catchers
+    in the center of Oslo~\cite{timberg_for_2014}. This claim, along
+    with the data on which it is based, is investigated in more details
+    by Torjus Retterstøl~\cite{torjus}. An interesting note in
+    regard to this thesis is the way this data was collected: the
+    journalists used very expensive equipment.
+
+    The point of this section is to show how \proj{OsmocomBB} can be
+    used in a practical case by researchers, and how the same data can
+    be recovered using a slightly modified version of the
+    \prog{cell\_log} application available with the \proj{OsmocomBB}
+    project.
+
+      This application works as follows. On startup, it scans either a
+      restricted range of \gls{arfcn}s or the complete set. For each
+      \gls{arfcn}, it makes a series of power level measurements given
+      in dBm. This is shown in the following figure.
+
+      \begin{lstlisting}[language=C, numbers=left,
+      basicstyle=\footnotesize, breaklines=true, frame=single]
+ARFCN 0 -109 -105 -107 -105 -98 -86 -101 -104 -91 -97 -100 -94
+ARFCN 12 -105 -98 -97 -107 -101 -104 -107 -109 -99 -87 -101 -103
+ARFCN 24 -95 -103 -102 -104 -103 -106 -107 -100 -100 -101 -105 -107
+ARFCN 36 -93 -101 -95 -104 -103 -85 -100 -106 -104 -107 -107 -105
+ARFCN 48 -108 -108 -105 -95 -100 -101 -93 -100 -102 -95 -102 -87
+[...]
+ARFCN 967 -106 -107 -99 -93 -104 -106 -91 -104 -104 -106 -109 -106
+ARFCN 979 -106 -103 -108 -106 -107 -108 -105 -106 -104 -104 -104 -105
+ARFCN 991 -105 -104 -108 -103 -108 -97 -109 -107 -106 -107 -107 -107
+ARFCN 1003 -101 -107 -108 -106 -93 -108 -108 -107 -109 -108 -109 -107
+ARFCN 1015 -109 -107 -107 -106 -105 -107 -108 -110 -106
+      \end{lstlisting}
+
+      When this is done, it tries to synchronize with all the available
+      cells, starting with the one with the strongest signal. Then, it
+      listens to the broadcast channel until it gets the SI from 1 to 4.
+      After that, it sends a Channel Request message so as to get an
+      Immediate Assignment message containing the Timing Advance value.
+      Finally, it writes the received values in a log file. The output
+      is shown in the following figure. It had to be modified to fit the
+      page.\\
+
+      \begin{lstlisting}[language=C, numbers=left,
+        basicstyle=\footnotesize,
+     frame=single, keepspaces=true]
+[sysinfo] Tue May 19 16:05:54 2015
+ARFCN |MCC          |MNC          |LAC    |cell ID|BSIC |
+------+-------------+-------------+-------+-------+-----+
+124   |242    Norway| 01   Telenor|0x307b |0x4112 |0,3  |
+
+rx-lev|min-db |max-pwr|C1  |C2  |T3212 |TA |
+------+-------+-------+----+----+------+---+
+-71   |-110   |   5   |  16|  16|14400 | 1 |
+
+SI2 (neigh.) BA=0: 51,52,53,54,56,57,59,60,61,62,64,65,66,67,68,76,81,
+                 122,123,124
+
+SI1 55 06 19 08 40 00 00 20 00 00 00 00 00 00 00 00 00 00 00 79 00 00 2b
+SI2 59 06 1a 0e 00 00 00 00 01 08 0f bd bc 00 00 00 00 00 00 ff 79 00 00
+SI3 49 06 1b 41 12 42 f2 10 30 7b c8 03 28 54 65 40 79 00 00 80 00 a0 43
+SI4 31 06 1c 42 f2 10 30 7b 65 40 79 00 00 80 00 b2 2b 2b 2b 2b 2b 2b 2b
+      \end{lstlisting}
+
+    This shows how it is possible to extract the information easily with
+    a very cheap phone. Moreover, some useful data is added here
+    compared to the data acquired by \comp{Aftenposten}: the value of
+    the t3212 timer, which is the time between periodic updates, the
+    timing advance, giving information about the distance from the cell, and
+    the list of neighbors advertised in the SI2. The SI messages are
+    also displayed directly as they appear on the layer 2. The main
+    advantage of using \proj{OsmocomBB} is its flexibility: a lot of
+    other information could be displayed.\fxnote{ The GPS data is
+    missing for now!}
+
+    One of the main difference between this demonstration and the system
+    used by Aftenposten is the automatic detection of IMSI-catchers, and
+    the alarms that are available. This kind of system is also possible
+    using data collected from \proj{OsmocomBB} of course. An
+    IMSI-catcher detector was actually developed by \comp{SRLabs} based
+    on \proj{OsmocomBB}:
+    CatcherCatcher~\footnote{https://opensource.srlabs.de/projects/mobile-network-assessment-tools/wiki/CatcherCatcher}.
+    It provides automatic detections and alarms based on various
+    criterion.
+
+\newpage
+
+    \section{Patch}
+
+      This patch modifies the output of the \prog{cell\_log}
+      application. It was developed on the
+      \code{fc20a37cb375dac11f45b78a446237c70f00841c} commit of the
+      master branch, and can also be found online:
+      \url{https://gitlab.com/francoip/thesis/raw/public/patch/aftenposten.patch}. \\
+
+\lstinputlisting[language=C, numbers=left, basicstyle=\small,
+breaklines=true, frame=single]{../misc/aftenposten.patch}

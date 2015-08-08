@@ -1,0 +1,18 @@
+\pagestyle{empty}
+\begin{abstract}
+This thesis analyzes the security of Norwegian GSM and GPRS networks
+using the OsmocomBB project, which aims to create a free and open source
+GSM baseband software implementation. OsmocomBB was used to understand
+the GSM system, and to understand and implement two types of attacks.
+The first one is an eavesdropping attack, and the second one is a set of
+Denial-of-Service attacks: the RACH flood attack, the IMSI attach flood
+attack, the IMSI detach attack, and an attack based on race conditions
+in the paging process.
+
+The feasibility of these attacks on Norwegian networks was assessed. It
+was found that both \comp{Telenor} and \comp{Netcom} seem protected from
+the eavesdropping attack. The IMSI detach attack is effective on
+\comp{Telenor}, but not on \comp{Netcom}. The other Denial-of-Service
+attacks are probably effective, but were not tested since they could
+damage the networks.
+\end{abstract}

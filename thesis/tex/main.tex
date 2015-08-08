@@ -1,0 +1,130 @@
+\documentclass{MScthesisITEM}
+
+% this package is just to generate text for demo-purposes
+\usepackage{blindtext}
+\usepackage{ae}
+%\usepackage[footnote,draft,silent,nomargin]{fixme}
+\usepackage[draft,silent,nomargin]{fixme} %No output
+\usepackage{csquotes} %to quote in a good way
+\usepackage{eurosym}
+\usepackage{booktabs} %nice tabulars
+\usepackage{multirow} %nice tabulars
+\usepackage{siunitx} %nice si units
+\usepackage{listing} %nice code
+
+%% New context definiton
+\newcommand{\code}{\texttt} %Inline code snippet
+\newcommand{\name}{}   %Person name
+\newcommand{\comp}{\emph}   %Company name
+\newcommand{\proj}{}   %Project name
+\newcommand{\prog}{\texttt}   %Program name
+
+%% Better tables
+\renewcommand{\arraystretch}{1.2}
+
+\title{GSM and GPRS Security Using OsmocomBB} % The title of your assignement; NB use \newlinetitle to start a newline
+\author{François Pönsgen} % Your firstname and lastname
+\professor{Stig F. Mjølsnes, ITEM (NTNU)} % Affiliation = ITEM for instance
+\supervisor{Jean-Michel Dricot, OPERA (ULB)}
+
+%% Uncomment the following in case you want subfigures; note that there will be a warning for the caption package
+% \let\subcaption\undefined
+% \let\subfloat\undefined
+% \usepackage[bf]{caption}
+% \usepackage{subcaption}
+
+\DeclareGraphicsExtensions{.pdf,.jpg,.png}
+\graphicspath{{../img/}}
+
+\loadglsentries{glossary}
+\makeglossaries
+
+\begin{document}
+\selectlanguage{english}
+\pagenumbering{roman}
+\pagestyle{plain}
+
+%% Only for the project; comment out the line below for the master's thesis; the front page will be generated automatically by DAIM
+%\titleITEM
+
+%% Only for the master's thesis; for the project report the description is taken from It's Learning and added by the department
+\selectlanguage{english} % Change to 'norsk' if you are writing in Norwegian
+\input{problem_description}
+\cleardoublepage
+
+%% There must be an abstract in English, even though the main text is in Norwegian
+\selectlanguage{english}
+\include{abstract_english}
+\cleardoublepage
+
+%% Only for the master's thesis; if the main text is in English and you can write Norwegian, there must be an abstract in Norwegian as well.
+% \selectlanguage{norsk}
+% \include{abstract_norwegian}
+% \cleardoublepage
+
+\selectlanguage{english}% Change to 'norsk' if you are writing in Norwegian
+
+\include{preface}
+\cleardoublepage
+
+% similarly you may add a separate acknowledgments page
+
+\tableofcontents*
+\cleardoublepage
+
+%% include if relevant
+%\listoffigures
+%\cleardoublepage
+
+%% include if relevant
+%\listoftables
+%\cleardoublepage
+
+%% include if relevant
+%\listofalgorithms
+%\addcontentsline{toc}{chapter}{List of Algorithms}
+%\cleardoublepage
+
+%% include if relevant
+%\printglossary[title=List of Symbols, style=long]
+%\cleardoublepage
+%\glsaddall[]
+
+%%\clearpage
+%\listoffixmes
+
+%% include if relevant
+\printglossary[title=List of Acronyms,type=\acronymtype] % prints just the list of acronyms
+\cleardoublepage
+
+\pagenumbering{arabic}
+\pagestyle{ruled}
+\include{introduction}
+\include{related_projects}
+\include{network_architecture}
+\include{protocol_stack_implementation}
+\include{eavesdropping_attacks}
+\include{dos_attacks}
+\include{security_configuration}
+\include{conclusion}
+% include here the other chapters
+
+\renewcommand*{\bibname}{References}
+\bibliographystyle{alpha}
+\bibliography{../bib/thesis,../bib/3gpp,../bib/img,../bib/intro}
+%
+%% Uncomment the following if you have any appendix
+ \appendix
+ \addtocontents{toc}{%
+  \protect\vspace{1em}% 
+  \protect\noindent \bfseries \appendixtocname\protect\par
+  \protect\vspace{-.5em}%
+ }
+ \renewcommand{\chaptername}{\appendixname}
+%% include below possible appendices (chapters)
+\include{tuto}
+\include{patch}
+\include{keystream}
+\include{aftenposten}
+
+\end{document}

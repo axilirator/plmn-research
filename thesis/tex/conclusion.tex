@@ -1,0 +1,60 @@
+\chapter{Conclusion} \label{chap:conclusion}
+
+  \gls{gsm} and \gls{gprs} are legacy systems which are widely used and
+  will probably stay relevant for a long time, but their security is
+  outdated. Several projects emerged along the years to analyze it, and
+  \proj{OsmocomBB} is one of them. By implementing an \gls{ms} side
+  \gls{gsm} protocol stack running on a Calypso based platform, it
+  allows an in depth control of the mobile phone side of the network. 
+
+  Two types of attacks made possible by the \proj{OsmocomBB} project
+  were analyzed in this thesis, with a focus on the \gls{gsm} system:
+  eavesdropping attacks and \gls{dos} attacks. Several steps of the
+  first one, and most of the second ones were implemented. While the
+  eavesdropping attack is technically complicated and has only been
+  demonstrated publicly by \name{Sylvain Munaut}, the \gls{dos} attacks
+  are simpler to implement by modifying normal phones procedures and
+  functions. An investigation on the feasibility of these two attacks
+  was conducted on Norwegian networks and concluded that, while the
+  eavesdropping attack would probably not be successful due to the
+  failure of its many
+  assumptions, the \gls{dos} attacks were difficult to prevent.
+
+  This shows that the goals defined in~\Sref{sec:pb} were mostly
+  fulfilled. Of course, improvements are possible and much work
+  could still be done on the topic of \gls{gsm} and \gls{gprs}
+  security. This chapter offers future work ideas for extending the
+  results of this thesis.
+
+  \Cref{chap:protocol_stack_implementation}, describing the protocol
+  stack implementation of \proj{OsmocomBB}, could be improved by
+  describing more functionalities of the project. This chapter was meant
+  as a guide to the source code which would make it easier for newcomers
+  to understand it and contribute to the project. An entire thesis could
+  probably be written on that topic, providing an in depth analysis of
+  the software and giving a good description of its architecture. It
+  would also be interesting to offer more links between the
+  specifications and the source code.
+
+  \newpage
+
+  \Cref{chap:eavesdropping_attacks} could obviously be improved as well.
+  No public implementation of the eavesdropping attack detailed in that
+  chapter has ever been provided. Of course, it might be for the best
+  since the consequences are important. Still, implementing more steps
+  of this attack and discussing it in more details should be interesting
+  and provide a nice contribution to the field. The \gls{dos} attacks
+  described in \Cref{chap:dos_attacks} could be completed by extensive
+  measurements, while keeping in mind that the implementation provided
+  here were not designed for efficiency, but for pedagogical purposes.
+  The discussion on the feasibility of these attacks, offered in
+  \Cref{chap:security_configuration_of_norwegian_operators} would
+  benefit from a wider set of data gathered in the whole country. 
+
+  Finally, a lot of work can still be done on the \proj{OsmocomBB}
+  project. For example, \gls{gprs} support is not provided yet, and
+  might offer new insight into the security of this network. Global
+  improvement of the project could only benefit the research in the
+  field of \gls{gsm} and \gls{gprs} security. Hopefully, it will
+  continue to grow, and incentivise the operators, but also the equipment
+  manufacturers to increase the security of their products.

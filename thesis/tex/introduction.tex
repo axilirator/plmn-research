@@ -1,0 +1,141 @@
+\chapter{Introduction} \label{chap:introduction}
+
+%starting points, objective, results, conclusion
+  
+%http://www.theregister.co.uk/2012/11/09/20_years_of_gsm_digital_phones/
+  %http://www.euronews.com/2015/06/01/belgium-hanging-up-on-the-phone-booth/
+  %http://www.fiercewireless.com/europe/story/frances-operators-sign-accord-cover-all-mobile-not-spots-2020/2015-05-22?utm_medium=rss&utm_source=rss&utm_campaign=rss
+  %http://www.fiercewireless.com/story/facebook-launches-facebook-lite-app-designed-2g-networks-emerging-markets/2015-01-27
+  %http://indianexpress.com/article/technology/social/exclusive-skype-to-roll-out-made-for-india-app/
+  %http://www.fiercewireless.com/europe/story/telenor-norway-will-ditch-3g-2g-lte-rollouts-gather-pace-northern-territori/2015-06-03?utm_medium=rss&utm_source=rss&utm_campaign=rss
+
+  More than 20 years after its introduction, the \gls{gsm} is still
+  relevant as a cheap and effective legacy system~\cite{cox_20_2012}.
+  While phone booths are gradually removed from the streets, \gls{gsm}
+  is now considered by some countries as a backup communication system
+  which should be available everywhere, and might outlive
+  3G~\cite{belgium:_2015,morris_frances_2015,carroll_telenor_2015}.
+  Moreover, \gls{gprs} is still widely used in developing countries:
+  \comp{Skype} or \comp{Facebook} recently provided specifically
+  designed versions of their mobile applications aimed at the 2G data
+  rate~\cite{goldstein_facebook_2015,swami_exclusive:_2015}.
+
+  Yet, 20 years is a really long time in technology, and it shows. When
+  \gls{gsm} networks were first deployed, the equipment was so expensive
+  that it could only be acquired by phone operators. Now that cheap
+  equipment and \gls{foss} projects are available, a wide attack surface
+  is accessible. One of this project is \proj{OsmocomBB}, which provides
+  a \gls{foss} implementation of a \gls{gsm} protocol stack. The
+  motivation behind this thesis is to explore the impact of this project
+  on the security of \gls{gsm} and \gls{gprs}. 
+
+  \section{Problem description evolution}
+  \label{sec:pb}
+
+  The problem description defined originally and included at the
+  beginning of this thesis had to be adapted along the way. This was
+  done to follow the evolution of the work and the better understanding
+  of the systems and their capabilities. The objective of this thesis
+  was: exploring the available eavesdropping attacks on \gls{gsm} and
+  \gls{gprs} using \proj{OsmocomBB}. This objective was modified in two
+  ways. Firstly, the focus was switched to mostly consider \gls{gsm} at
+  the expense of \gls{gprs}. Secondly, a new set of attacks was
+  considered.
+
+  The focus of this thesis on the security of \gls{gprs} was reduced for
+  several reasons. Firstly, \gls{gprs} is not supported by
+  \proj{OsmocomBB} yet, which makes attacks on this network very hard to
+  implement. Secondly, the eavesdropping attack on \gls{gprs} has
+  several major limitations, and is thus less interesting than first
+  expected. Finally, the \gls{gprs} network is almost completely
+  separated from the \gls{gsm} network, and a lot of work would have
+  been needed to cover it too. Therefore, the emphasis is clearly on
+  \gls{gsm}, but the impact on \gls{gprs} is considered as well. The
+  focus also shifted from the eavesdropping attacks to a wider range of
+  attacks that could be implemented with \proj{OsmocomBB}. A complete
+  chapter is dedicated to \gls{dos} attacks, which appeared to be very
+  relevant to the topic.
+
+  The four goals originally defined are mostly accomplished. A solid
+  practical knowledge had to be developed in order to implement the
+  various attacks demonstrated in this thesis. The eavesdropping attack
+  on \gls{gsm} was described in details and some steps were implemented,
+  but it could not be executed completely. The only public demonstration
+  of this attack was performed by \name{Sylvain Munaut}, and no
+  implementation or detailed description were publicly available, which
+  made this task harder. The eavesdropping attack on \gls{gprs} is a
+  variation of the previous one and is therefore described as well, but
+  was not tested. Finally, the feasibility of the attacks on Norwegian
+  networks was investigated in details, and extended to \gls{dos}
+  attacks. The organization of this thesis is described in the next
+  section.
+
+  \section{Structure}
+
+  %Report this in chapter introductions.
+    This thesis contains eight chapters. \Cref{chap:introduction}, the
+    chapter you are reading, introduces the problem, the structure, and
+    the methodology of the thesis. \Cref{chap:related_projects} gives
+    references to the relevant researches in the field, and provides
+    some context around \proj{OsmocomBB} by presenting important related
+    projects.
+
+    \Cref{chap:network_architecture} is meant to outline the \gls{gsm}
+    and \gls{gprs} networks architectures, and to provide background for
+    the following chapters. \Cref{chap:protocol_stack_implementation}
+    gives an overview of the protocol stack running on the mobile
+    phones, and provides links between the \proj{OsmocomBB} source code
+    and the \gls{3gpp} specifications.
+
+    After two theoretical chapters, \Cref{chap:eavesdropping_attacks} is
+    mostly dedicated to an eavesdropping attack on \gls{gsm}, but also
+    discusses an attack on \gls{gprs}. It details the various steps of
+    the attacks and provides an implementation using \proj{OsmocomBB}
+    for some of them. \Cref{chap:dos_attacks} is dedicated to \gls{dos}
+    attacks using \proj{OsmocomBB}. It provides a description of the
+    attacks as well as an implementation for most of them. They are
+    aimed at the \gls{gsm} network, but can indirectly impact the
+    \gls{gprs} network as well.
+
+    \Cref{chap:security_configuration_of_norwegian_operators} assesses
+    the feasibility of these two categories of attacks on Norwegian
+    networks. It offers a detailed investigation using the
+    implementations introduced in the previous chapters. Finally,
+    \Cref{chap:conclusion} is the conclusion. It summarizes the thesis,
+    gets back to its limitations and suggests possible future work.
+    Appendices are available at the very end of this document, and
+    contain a tutorial on the installation and usage of
+    \proj{OsmocomBB}, the patches adding the proposed implementations,
+    and a small case study on IMSI-catchers detection.
+
+  \section{Methodology}
+
+    The researches presented in this thesis are based on software.
+    Therefore, the applied methodology is based on classical software
+    engineering procedures. It is composed of three main phases:
+    research, development, and
+    validation~\cite{sommerville_software_2007}. These phases can be
+    mapped on the chapters to some extent.
+
+    The research phase consisted first in establishing the context
+    around the project by getting familiar with related works, as
+    described in \Cref{chap:related_projects}. Then, it was crucial to
+    understand and analyze the \gls{gsm} and \gls{gprs} networks, but
+    also the \proj{OsmocomBB} source code. It implied reading and
+    understanding the specifications, and linking them with the
+    architecture of the program. This is mostly represented in
+    \Cref{chap:network_architecture} and
+    \Cref{chap:protocol_stack_implementation}. This phase is also
+    extended to \Cref{chap:eavesdropping_attacks} and
+    \Cref{chap:dos_attacks}, where the attacks had to be understood and
+    analyzed.
+
+    The development phase is described in
+    \Cref{chap:eavesdropping_attacks} and \Cref{chap:dos_attacks} as
+    well, where the programs implementing several steps of the
+    eavesdropping attacks and various \gls{dos} attacks are introduced.
+    The patches providing these implementations are available in the
+    appendices. Finally, the validation phase is included in
+    \Cref{chap:security_configuration_of_norwegian_operators}, where
+    these implementations were tested and validated on Norwegian
+    networks.

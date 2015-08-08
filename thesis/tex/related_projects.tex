@@ -1,0 +1,230 @@
+\chapter{Related projects}
+\label{chap:related_projects}
+
+    This chapter gives some context around the \proj{OsmocomBB} project
+    and provides references to selected works on the same topic. It
+    shows that research on \gls{gsm} security have been carried out for
+    a long time, and highlights its milestones.
+
+    \section{Nokia DCT3}
+
+      For a few years, \comp{Nokia} shipped its DCT3 family of mobile
+      phones with a remote logging facility used for debugging. This
+      allowed various projects to exist because it gave out a lot of
+      otherwise hidden information to hackers and independent
+      researchers.
+
+      One of the project exploiting this situation was \proj{Project
+      Blacksphere} around 2003~\cite{project_????}. This project led to
+      the creation of a series of tools which helped to debug \gls{gsm}
+      and created a community around it. One of these tools is
+      \prog{Debug Tracing}, which is provided in the \proj{Gammu}
+      software when using the \code{nokiadebug} argument. It provides
+      very useful debug traces that can also help understand how the
+      network works. For example, it is possible to receive most of the
+      layer 2 and 3 messages that the phone processes. \name{Glendrange}
+      et al.\ showed examples of results obtained using this
+      software~\cite[p.~89]{glendrange_decoding_2010}.
+
+      \prog{NetMonitor} is a hidden software available on some phones
+      that allows it to display various network and phone
+      parameters~\cite{wiacek_netmonitor_2002}. It is also possible to
+      enable this software on DCT3 phones using \proj{Gammu} with the
+      argument \code{nokianetmonitor}. This gives information about the
+      phone and network parameters. Again, \name{Glendrange} et al.\
+      showed examples of results found with \prog{NetMonitor}
+      ~\cite[p.~85]{glendrange_decoding_2010}.
+
+      \prog{Debug Tracing} was also used to reverse engineer the DCT3
+      phones and to provide flashing, upgrading, or modding
+      capabilities. This led to projects like \proj{MADos}: an open
+      source alternative firmware for DCT3 phones created by
+      \name{g3gg0} and \name{krisha}~\cite{project_????}. It can
+      probably be considered as the ancestor of \proj{OsmocomBB}. A big
+      community existed around this project because it allowed people to
+      install custom applications on the phones, new games for example.
+      The source code of \proj{MADos} is still available after more than
+      ten years~\cite{index_????}.
+
+      \prog{NetMonitor} and \prog{Debug Tracing} were both used to
+      gather information about the network. This seemed to be very
+      useful in the beginning of \gls{gsm} security research and helped
+      to create a community around it, while paving the way for more
+      ambitious projects.
+
+    \section{THC projects}
+
+      \gls{thc} is a group of hackers which was active in the \gls{gsm}
+      development community starting from the beginning of 2007. They
+      introduced the \proj{GSM Software Project} and the \proj{A5
+      Cracking Project} at the CCCamp in 2007~\cite{hulton_a5_2007}. The
+      \proj{GSM Software Project}, also called \proj{GSM Scanner or
+      Sniffer Project}, led to the creation of various tools. Its goal
+      was to analyze and understand the \gls{gsm} network and to build a
+      \gls{gsm} receiver for less than \SI{1000}{\$}. After exploring
+      various ideas, the development focused on \proj{GNU Radio} and
+      \gls{usrp} devices~\cite{gsm_2009}.
+
+      \iffalse
+      \fxnote{http://docslide.us/download/document/?id=0IRArNhE%2FvyDjqnteKTcr0WDHRsWWqgrwIyHSob8UYyheLQr8aBjMcDYQ9j0IRBD35jgsCv%2FXmMYnc0ZIjWboA%3D%3D}
+        \fxnote{https://content.uploady.com/download/Cracking-a5-THC-Wiki.pdf?f=Cracking-a5-THC-Wiki.pdf&fid=3tZsWm3Zvm_&p=A9URDey47wx&m=application%2Fpdf&s=1&u=https%3A%2F%2Fwww.uploady.com%2Fdownload%2F3tZsWm3Zvm_%2FBcbEAesbc8a3bYmO&tp=remote&t=1430755990&ex=172800&ip=2180108371&h=7f088c6c4f36fdfb3b0118f980480dcbcc6d4f17}
+      \fi
+
+      The main tools that were released were \prog{gssm}, \prog{gsmsp},
+      \prog{gsm-tvoid}, and \prog{gsmdecode}. The three first tools were
+      used along a \gls{usrp} and \proj{GNU Radio} to capture a limited
+      subset of unencrypted traffic, and to demodulate and decode its
+      layer 1 to create layer 2 packets. According to \name{Harald
+      Welte}, \prog{gssm} and \prog{gsmsp} were two early
+      implementations by \name{Joshua Lackey} which stayed at the alpha
+      level~\cite{welte_airprobe:_2009}. \prog{Gsm-tvoid} was developed
+      by someone under the pseudonym of \name{Tempest Void} and stayed
+      the best decoder for a long time, even including a \gls{gui}.
+      \prog{Gsmdecode} does not have the same purpose and is used to
+      decode the layer 2 \gls{gsm} messages from the DCT3 phones or from
+      \prog{gsm-tvoid}. It converts hexadecimal bytes to human readable
+      data and is similar to \proj{Wireshark} from that point of view.
+
+      Another project from \gls{thc} is the \proj{TSM30 project}, which
+      aimed to modify the firmware of the \comp{Vitelcom} TSM30 mobile
+      phone to receive and send arbitrary traffic. It is apparently
+      based on an older Spanish project called \proj{TuxSM}, but more
+      information was hard to find~\cite{roura_proyecto_2005}. The TSM30
+      phone uses a Calypso based platform, which is the targeted
+      platform for the \proj{OsmocomBB} project. This was preferred over
+      the Nokia DCT3 platform because the source code of the TSM30
+      firmware and some documentation were leaked, making the work
+      easier~\cite{opentsm_2009,texas_instruments_hercrom400g2_2000-1,texas_instruments_hercrom400g2_2000,sokolov_sharing_2011}.
+      The project eventually stopped, maybe because the phones were hard
+      to find.
+
+    \section{Attacks on A5}
+
+      \gls{gsm} cryptography is based on a set of algorithm called the
+      A5 cipher family. These algorithms have never been released
+      officially to the public, but were partially leaked as soon as
+      1994 when \name{Ross Anderson} received some incomplete
+      documentation \textquote{anonymously in two brown
+      envelopes}~\cite{anderson_a5_1994}. The A5/1 and A5/2 algorithms
+      were completely reversed engineered by \name{Marc Briceno},
+      \name{Ian Goldberg}, and \name{David Wagner} in 1999, and a
+      pedagogical implementation was
+      proposed~\cite{briceno_pedagogical_1999}.
+
+      Several attacks were published throughout the years. The first
+      analysis of A5 was published by \name{Jovan Dj. Golić} in
+      1997~\cite{golic_cryptanalysis_1997}. In 2003, \name{Elad Barkan},
+      \name{Eli Biham}, and \name{Nathan Keller} demonstrated a
+      practical attack breaking A5/2 in less than a second using a
+      ciphertext-only attack requiring a few dozen milliseconds of
+      encrypted data~\cite{barkan_instant_2003}. Other practical attacks
+      on A5/1 were attempted, but none of them resulted in an effective
+      and public way to break A5/1 as it is implemented in \gls{gsm}.
+
+      The \proj{A5 Cracking Project} emerged from \gls{thc} around 2007,
+      as stated in the previous section. This project aimed to develop a
+      practical way of cracking A5/1 by reducing the time and the price
+      of the attack. To do so, they focused on known plaintext since it
+      is common in \gls{gsm}, and decided to apply a time memory
+      trade-off by building rainbow tables using \glspl{fpga}. They
+      claimed to obtain very good results compared to the previous
+      methods, because of their use of rainbow
+      tables~\cite{hulton_intercepting_2008}. These tables were supposed
+      to be released around the second quarter of 2008 but were not, and
+      the project seems to be abandoned now.
+
+    \section{Berlin A5/1 rainbow table set and \proj{Kraken}}
+    \label{sec:berlin}
+
+      The main problem with the projects described in the previous
+      section were the centralized development and computation, which
+      created a single point of failure. In August 2009, \name{Sascha
+      Krißler} and \name{Karsten Nohl} introduced a new project at
+      Hacking at Random~\cite{nohl_subverting_2009}.
+      
+      This project was different than the previous ones because it tried
+      to allow anyone to work on the computation of the tables and share
+      them, thus distributing the responsibility and diminishing the
+      possibility of failure. The programs used to compute the table
+      were optimized during the whole life of the project. What was
+      supposed to take three months on 80 GPUs~\cite{nohl_gsm:_2009}
+      finally took four weeks on four GPUs~\cite{nohl_breaking_2010}.
+      These programs were available on the project website which is now
+      offline, but they can be downloaded along with
+      \proj{Kraken}~\cite{kraken_????}. This subject is discussed in
+      further details on the project wiki, and by \name{Glendrange} et
+      al.~\cite{glendrange_decoding_2010,srlabs_wiki_????}. The torrent
+      files can be found on the project wiki as well, and tables can be
+      bought from people willing to sell it.
+
+      On the 16th of June 2010, \name{Frank A. Stevenson} publicly
+      announced the completion of the set~\cite{stevenson_[a51]_2010-1}.
+      These tables are often called the Berlin A5/1 rainbow table set
+      and seem to be the first which were publicly available. This does
+      not mean that A5/1 was crackable in practice then. Indeed, a tool
+      was needed to compute the session key from some keystream using
+      the tables, and this is \proj{Kraken}. \proj{Kraken} is the first
+      public A5/1 cracker, created by \name{Frank A. Stevenson}, and
+      which uses the Berlin table set. It was released on the 16th of
+      July 2010~\cite{stevenson_[a51]_2010}. This project was a leap
+      forward in the demonstration of \gls{gsm} insecurity: from some
+      keystream, it found a session key in a matter of seconds on a
+      mainstream computer.
+      
+    \section{\proj{Airprobe}}
+    \label{sec:airprobe}
+
+      \proj{Airprobe} is a follow up to the \gls{thc} \proj{GSM Software
+      Project}. It was introduced at Hacking at Random in August 2009 by
+      \name{Harald Welte}~\cite{welte_airprobe:_2009,airprobe_????}.
+      This project is used to capture, demodulate and decode \gls{gsm}
+      traffic using \gls{usrp} devices and \proj{GNU Radio}. The goal
+      was again to raise awareness about \gls{gsm} security.
+
+      \proj{Airprobe} introduced a new tool to the \gls{thc} suite:
+      \prog{gsm-receiver}. It was written by \name{Piotr Krysik} and,
+      according to \name{Harald Welte}, it has a much better decoding
+      accuracy than the other ones. \name{Glendrange} et al.\ showed how
+      to intercept \gls{gsm} traffic using \prog{gsm-tvoid} or
+      \prog{gsm-receiver}, along with \prog{gsmdecode} or
+      \proj{Wireshark}~\cite[p.~111]{glendrange_decoding_2010}. This
+      example only works on unencrypted traffic.
+
+      After the Berlin tables set and \proj{Kraken} were released, it
+      became possible to do the same for encrypted traffic as well. This
+      was shown by \name{Karsten Nohl} at Black Hat 2010 one week after
+      the release of
+      \proj{Kraken}~\cite{nohl_breaking_2010,srlabs_decrypting_????}.
+      \proj{GNU Radio} was used to record data from the air,
+      \proj{Airprobe} to parse the control data and extract the
+      keystream, \proj{Kraken} to find the A5/1 session key, and
+      \proj{Airprobe} again to decode the decrypted voice. To find some
+      keystream, known plaintext has to be found as well. This is
+      possible since a lot of messages in \gls{gsm} are predictable, as
+      was already shown by \name{Karsten Nohl} and \name{Chris Paget} in
+      2009~\cite[p.~19]{nohl_gsm:_2009}.
+
+      Despite all these progresses, the \proj{Airprobe} community faced
+      several problems which were difficult to solve. Even
+      though some work has been done on these two problems, they were
+      solved by using \proj{OsmocomBB}, which takes a different approach
+      and provides a better signal quality.
+
+    \section{OsmocomBB}
+
+      The development for \proj{OsmocomBB} started in January
+      2010~\cite{welte_announcing_2010}, and a demonstration was given
+      by Harald Welte at the end of the year at
+      Hashdays~\cite{welte_osmocombb:_2010}. This project aims to
+      provide a \gls{foss} implementation of a mobile phone \gls{gsm}
+      baseband chipset. The goal was once again to better understand
+      \gls{gsm} and raise awareness of its security issues. Apparently,
+      only two other projects tried something similar: MADos and the
+      \gls{thc} \proj{TSM30} project, both described in the previous
+      sections. \proj{OsmocomBB} allows researchers to control the
+      baseband chipset of a mobile phone. This makes it easier to
+      analyze the received traffic, to send arbitrary data, and so on.
+      Various applications are available to do so, and it is possible to
+      modify them and create new ones. This will be demonstrated in this
+      thesis.
+

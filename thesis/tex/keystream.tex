@@ -1,0 +1,31 @@
+\chapter{Keystream patch}
+\label{app:keystream}
+
+This patch modifies the \prog{ccch\_scan} program of the
+\code{sylvain/burst\_ind} branch to recover keystream in order to break
+the encryption key.
+
+To do so, knowing the downlink SACCH sequence is needed. This can be
+found using Wireshark with the following filter while listening to a
+transaction on the dedicated channel using the \prog{mobile}
+application:
+
+\begin{lstlisting}[numbers=left,
+basicstyle=\footnotesize, breaklines=true, frame=single]
+gsmtap.chan_type == 136 && gsmtap.uplink == 0
+\end{lstlisting}
+
+The following command can be used if the System Information messages
+sequence is SI5, SI5ter, SI6 on the ARFCN 30:
+
+\begin{lstlisting}[numbers=left,
+basicstyle=\footnotesize, breaklines=true, frame=single]
+sudo host/layer23/src/misc/ccch_scan -a 30 -q 5,5t,6,
+\end{lstlisting}
+
+It was developed on the \code{07ce6faff389dcaedc9b11ee4245d2a310f7612b}
+commit of the \code{sylvain/burst\_ind} branch. It is also available at
+\url{https://gitlab.com/francoip/thesis/raw/public/patch/keystream.patch}.
+
+\lstinputlisting[language=C, numbers=left, basicstyle=\small,
+breaklines=true, frame=single]{../patch/keystream.patch}

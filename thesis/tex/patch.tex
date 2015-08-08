@@ -1,0 +1,17 @@
+\chapter{DoS, silent SMS, and encryption advertising patches}
+\label{app:patches}
+
+This patch makes three modifications to the \prog{mobile} application:
+
+\begin{itemize}[topsep=-1em,parsep=0em,itemsep=0.5em]
+  \item the \gls{dos} related commands;
+  \item the silent \gls{sms} message commands;
+  \item the fake encryption support advertising command.
+\end{itemize}
+
+It was developed on the \code{fc20a37cb375dac11f45b78a446237c70f00841c}
+commit of the master branch. It is also available at
+\url{https://gitlab.com/francoip/thesis/raw/public/patch/thesis.patch}.
+
+\lstinputlisting[language=C, numbers=left, basicstyle=\small,
+breaklines=true, frame=single]{../patch/thesis.patch}

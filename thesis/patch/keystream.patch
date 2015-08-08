@@ -1,0 +1,442 @@
+diff --git a/src/host/layer23/src/misc/app_ccch_scan.c b/src/host/layer23/src/misc/app_ccch_scan.c
+index ecf934d..022b965 100644
+--- a/src/host/layer23/src/misc/app_ccch_scan.c
++++ b/src/host/layer23/src/misc/app_ccch_scan.c
+@@ -51,6 +51,8 @@
+ 
+ #include <osmocom/bb/misc/xcch.h>
+ 
++#define MAX_SI 64
++
+ extern struct gsmtap_inst *gsmtap_inst;
+ 
+ enum dch_state_t {
+@@ -69,7 +71,7 @@ static struct {
+ 	int			dch_badcnt;
+ 	int			dch_ciph;
+ 
+-	FILE *			fh;
++	//FILE *			fh;
+ 
+ 	sbit_t			bursts_dl[116 * 4];
+ 	sbit_t			bursts_ul[116 * 4];
+@@ -77,6 +79,19 @@ static struct {
+ 	struct gsm_sysinfo_freq	cell_arfcns[1024];
+ 
+ 	uint8_t			kc[8];
++
++	uint8_t			paged;
++	uint8_t			tmsi[4];
++
++	char			si_seq[MAX_SI];
++	char			si_seq_part[MAX_SI];
++
++	uint8_t			have_si5;
++	uint8_t			have_si5t;
++	uint8_t			have_si6;
++
++	ubit_t			current_bits[116*4];
++	ubit_t			last_si5[116*4];
+ } app_state;
+ 
+ 
+@@ -216,6 +231,12 @@ static int gsm48_rx_imm_ass(struct msgb *msg, struct osmocom_ms *ms)
+ 	if ((!app_state.has_si1) || (app_state.dch_state != DCH_NONE))
+ 		return 0;
+ 
++	if (!app_state.paged) {
++		return 0;
++	} else {
++		app_state.paged = 0;
++	}
++
+ 	rsl_dec_chan_nr(ia->chan_desc.chan_nr, &ch_type, &ch_subch, &ch_ts);
+ 
+ 	if (!ia->chan_desc.h0.h) {
+@@ -358,6 +379,8 @@ static int gsm48_rx_paging_p1(struct msgb *msg, struct osmocom_ms *ms)
+ 		     chan_need(pag->cneed1),
+ 		     mi_type_to_string(mi_type),
+ 		     mi_string);
++		if(!memcmp(&pag->data[1+1], app_state.tmsi, 4))
++			app_state.paged = 1;
+ 	}
+ 
+ 	/* check if we have a MI type in here */
+@@ -379,6 +402,8 @@ static int gsm48_rx_paging_p1(struct msgb *msg, struct osmocom_ms *ms)
+ 		     chan_need(pag->cneed2),
+ 		     mi_type_to_string(mi_type),
+ 		     mi_string);
++		if(!memcmp(&pag->data[2+len1+2+1], app_state.tmsi, 4))
++			app_state.paged = 1;
+ 	}
+ 	return 0;
+ }
+@@ -398,9 +423,15 @@ static int gsm48_rx_paging_p2(struct msgb *msg, struct osmocom_ms *ms)
+ 	LOGP(DRR, LOGL_NOTICE, "Paging1: %s chan %s to TMSI M(0x%x) \n",
+ 		     pag_print_mode(pag->pag_mode),
+ 		     chan_need(pag->cneed1), pag->tmsi1);
++	sprintf(mi_string, "0x%x", pag->tmsi1);
++	if(!memcmp((uint8_t*)&pag->tmsi1, app_state.tmsi, 4))
++		app_state.paged = 1;
+ 	LOGP(DRR, LOGL_NOTICE, "Paging2: %s chan %s to TMSI M(0x%x) \n",
+ 		     pag_print_mode(pag->pag_mode),
+ 		     chan_need(pag->cneed1), pag->tmsi2);
++	sprintf(mi_string, "0x%x", pag->tmsi2);
++	if(!memcmp((uint8_t*)&pag->tmsi2, app_state.tmsi, 4))
++		app_state.paged = 1;
+ 
+ 	/* no optional element */
+ 	if (msgb_l3len(msg) < sizeof(*pag) + 3)
+@@ -424,6 +455,8 @@ static int gsm48_rx_paging_p2(struct msgb *msg, struct osmocom_ms *ms)
+ 	     "n/a ",
+ 	     mi_type_to_string(mi_type),
+ 	     mi_string);
++	if(!memcmp(&pag->data[2+1], app_state.tmsi, 4))
++		app_state.paged = 1;
+ 
+ 	return 0;
+ }
+@@ -482,6 +515,201 @@ int gsm48_rx_bcch(struct msgb *msg, struct osmocom_ms *ms)
+ 	return 0;
+ }
+ 
++int get_next_si(char *si)
++{
++	char *tmp = strdup(app_state.si_seq_part);
++	char *t;
++
++	do {
++		t = strsep(&tmp, ",");
++		//printf("si: %s; tmp: %s.\n", si, tmp);
++		if (strlen(tmp) == 0) {
++			strcpy(tmp, app_state.si_seq);
++		}
++	} while (strlen(tmp) == 0);
++
++	strcpy(app_state.si_seq_part, tmp);
++	strcpy(si,t);
++
++	if (t == NULL) {
++		LOGP(DRR, LOGL_NOTICE, "Did you give a sequence?\n");
++		strcpy(si,"Error.");
++	}
++
++	return 0;
++}
++
++int get_next_seq(const char *si)
++{
++// si_seq_part is modified to contain the next si in the sequence,
++// based on the current si.
++
++	char *p;
++
++	LOGP(DRR, LOGL_NOTICE, "Try to find \'%s\' in \'%s\'.\n",
++			si, app_state.si_seq_part);
++
++	do {
++		p = strstr(app_state.si_seq_part, si);
++		if (p == NULL) {
++			p = strstr(app_state.si_seq, si);
++			if (p == NULL) {
++				LOGP(DRR, LOGL_NOTICE, "SI not in the sequence\n");
++				return -1;
++			} else {
++				LOGP(DRR, LOGL_NOTICE, "End of sequence, start again\n");
++				strcpy(app_state.si_seq_part,
++						app_state.si_seq);
++			}
++		}
++	} while (p == NULL);
++
++	strcpy(app_state.si_seq_part, p);
++
++	char *tmp = strdup(app_state.si_seq_part);
++
++	do {
++		strsep(&tmp, ",");
++		if (strlen(tmp) == 0) {
++			strcpy(tmp, app_state.si_seq);
++		}
++	} while (strlen(tmp) == 0);
++
++	strcpy(app_state.si_seq_part, tmp);
++
++	return 0;
++}
++
++void sacch_nociph(uint8_t l2[23])
++{
++	char si[5];
++
++	LOGP(DRR, LOGL_ERROR, "New DL SACCH: %02x %02x is ",
++			l2[5], l2[6]);
++
++	if (l2[5] == 0x06) {
++		switch (l2[6]) {
++		case 0x1d:
++			fprintf(stderr, "SI5.\n");
++
++			strcpy(si, "5,");
++
++			int i, same_si = 1;
++
++			if (app_state.have_si5) {
++				/* Does not take the SACCH L1 header
++				 * into account. Hopefully it doesn't
++				 * change too fast. */
++				for (i=0; i<4*116; i++) {
++					if (app_state.last_si5[i]
++							!= app_state.current_bits[i]) {
++
++						LOGP(DRR, LOGL_ERROR,
++							"SI5 changed\n");
++						same_si = 0;
++						break;
++					}
++				}
++			}
++
++			if (!same_si || !app_state.have_si5) {
++				for (i=0; i<4*116; i++) {
++					app_state.last_si5[i]
++							= app_state.current_bits[i];
++				}
++				app_state.have_si5 = 1;
++				LOGP(DRR, LOGL_ERROR,
++						"Saved SI5 cleartext\n");
++			}
++
++			break;
++		case 0x06:
++			fprintf(stderr, "SI5ter.\n");
++			strcpy(si, "5t,");
++			break;
++		case 0x1e:
++			fprintf(stderr, "SI6.\n");
++			strcpy(si, "6,");
++			break;
++		default:
++			fprintf(stderr, "??.\n");
++			strcpy(si, "??,");
++			break;
++		}
++
++		/* Find the position in the sequence assuming
++		 * the sequence is always followed but there
++		 * might be an offset */
++
++		get_next_seq(si);
++
++	} else {
++		fprintf(stderr, "not SI.\n");
++	}
++}
++
++void sacch_ciph(uint8_t l2[23])
++{
++	/* Get keystream assuming the sequence is correct. */
++
++	/* When this is done, the call after ciph will do:
++	 * if it receives the string 556, return 5 and make the string 56
++	 * if it receives the string 56, return 5 and make the string 6
++	 * if it receives 6, return 6 and make the string 556
++	 * char *find_si(char *si_seq_part);
++	 */
++
++	LOGP(DRR, LOGL_ERROR, "New DL SACCH: %02x %02x should be ",
++			l2[5], l2[6]);
++
++	/* Find current SI */
++	char si[5];
++
++	get_next_si(si);
++
++	if (!strcmp(si, "5")) {
++		fprintf(stderr, "SI5.\n");
++		LOGP(DRR, LOGL_ERROR, "Potential SI5 keystream:\n");
++
++		ubit_t ks[4*114];
++
++		int i,j;
++		for (j=0; j<4; j++) {
++			for (i=0+116*j; i<57+116*j; i++) {
++				ks[i] = app_state.current_bits[i] ^ app_state.last_si5[i];
++			}
++			for (i=59+116*j; i<116+116*j; i++) {
++				ks[i-2*(j+1)] = app_state.current_bits[i] ^ app_state.last_si5[i];
++			}
++		}
++
++		for (i=0; i<4*114; i++) {
++			if (i%114 == 0 && i != 0)
++				fprintf(stderr, "\n");
++			fprintf(stderr, "%s", ks[i]?"1":"0");
++		}
++		fprintf(stderr, "\n");
++
++	} else if (!strcmp(si, "5t")) {
++		fprintf(stderr, "SI5ter.\n");
++	} else if (!strcmp(si, "6")) {
++		fprintf(stderr, "SI6.\n");
++	} else if (!strcmp(si, "??")) {
++		fprintf(stderr, "??.\n");
++	} else {
++		fprintf(stderr, "Error.\n");
++	}
++}
++
++void decode_sacch(uint8_t l2[23])
++{
++	if (!app_state.dch_ciph) {
++		sacch_nociph(l2);
++
++	} else {
++		sacch_ciph(l2);
++	}
++}
+ 
+ static void
+ local_burst_decode(struct l1ctl_burst_ind *bi)
+@@ -542,6 +770,9 @@ local_burst_decode(struct l1ctl_burst_ind *bi)
+ 	osmo_pbit2ubit_ext(bt, 59, bi->bits, 57, 57, 0);
+ 	bt[57] = bt[58] = 1;
+ 
++	for(i=0; i<116; i++)
++		app_state.current_bits[(116*bid)+i] = bt[i];
++
+ 	/* A5/x */
+ 	if (app_state.dch_ciph) {
+ 		ubit_t ks_dl[114], ks_ul[114], *ks = ul ? ks_ul : ks_dl;
+@@ -579,9 +810,14 @@ local_burst_decode(struct l1ctl_burst_ind *bi)
+ 			);
+ 
+ 			/* Crude CIPH.MOD.COMMAND detect */
+-			if ((l2[3] == 0x06) && (l2[4] == 0x35) && (l2[5] & 1))
++			if ((l2[3] == 0x06) && (l2[4] == 0x35) && (l2[5] & 1)) {
+ 				app_state.dch_ciph = 1 + ((l2[5] >> 1) & 7);
++				LOGP(DRR, LOGL_ERROR, "CIPH.MOD.COMMAND\n");
++			}
+ 		}
++
++		if(bi->flags & BI_FLG_SACCH && !ul) /*Downlink SACCH*/
++			decode_sacch(l2);
+ 	}
+ }
+ 
+@@ -627,9 +863,10 @@ void layer3_rx_burst(struct osmocom_ms *ms, struct msgb *msg)
+ 				/* Change state */
+ 				app_state.dch_state = DCH_ACTIVE;
+ 				app_state.dch_badcnt = 0;
++				strcpy(app_state.si_seq_part, app_state.si_seq);
+ 
+ 				/* Open output */
+-				app_state.fh = fopen(gen_filename(ms, bi), "wb");
++				//app_state.fh = fopen(gen_filename(ms, bi), "wb");
+ 			} else {
+ 				/* Abandon ? */
+ 				do_rel = (app_state.dch_badcnt++) >= 4;
+@@ -667,15 +904,15 @@ void layer3_rx_burst(struct osmocom_ms *ms, struct msgb *msg)
+ 		app_state.dch_ciph = 0;
+ 
+ 		/* Close output */
+-		if (app_state.fh) {
+-			fclose(app_state.fh);
+-			app_state.fh = NULL;
+-		}
++		//if (app_state.fh) {
++			//fclose(app_state.fh);
++			//app_state.fh = NULL;
++		//}
+ 	}
+ 
+ 	/* Save the burst */
+-	if (app_state.dch_state == DCH_ACTIVE)
+-		fwrite(bi, sizeof(*bi), 1, app_state.fh);
++	//if (app_state.dch_state == DCH_ACTIVE)
++		//fwrite(bi, sizeof(*bi), 1, app_state.fh);
+ 
+ 	/* Try local decoding */
+ 	if (app_state.dch_state == DCH_ACTIVE)
+@@ -690,10 +927,11 @@ void layer3_app_reset(void)
+ 	app_state.dch_state = DCH_NONE;
+ 	app_state.dch_badcnt = 0;
+ 	app_state.dch_ciph = 0;
++	app_state.paged = 0;
+ 
+-	if (app_state.fh)
+-		fclose(app_state.fh);
+-	app_state.fh = NULL;
++	//if (app_state.fh)
++		//fclose(app_state.fh);
++	//app_state.fh = NULL;
+ 
+ 	memset(&app_state.cell_arfcns, 0x00, sizeof(app_state.cell_arfcns));
+ }
+@@ -740,7 +978,8 @@ static int l23_cfg_supported()
+ static int l23_getopt_options(struct option **options)
+ {
+ 	static struct option opts [] = {
+-		{"kc", 1, 0, 'k'},
++		{"tmsi", 1, 0, 't'},
++		{"seq", 1, 0, 'q'},
+ 	};
+ 
+ 	*options = opts;
+@@ -750,7 +989,13 @@ static int l23_getopt_options(struct option **options)
+ static int l23_cfg_print_help()
+ {
+ 	printf("\nApplication specific\n");
+-	printf("  -k --kc KEY           Key to use to try to decipher DCCHs\n");
++	printf("  -t --tmsi TMSI	TMSI to follow on the DCCH.\n");
++	printf("  -q --seq SEQUENCE	Sequence of the SI on SACCH.\n");
++
++	/* The program is first used with a key to find the SI sequence of the cell,
++	 * then without key to find keystream related to the TMSI.
++	 *
++	 * If the TMSI is not set, the program follows the first IMM.ASS. for debugging*/
+ 
+ 	return 0;
+ }
+@@ -758,9 +1003,17 @@ static int l23_cfg_print_help()
+ static int l23_cfg_handle(int c, const char *optarg)
+ {
+ 	switch (c) {
+-	case 'k':
+-		if (osmo_hexparse(optarg, app_state.kc, 8) != 8) {
+-			fprintf(stderr, "Invalid Kc\n");
++	case 't':
++		if (osmo_hexparse(optarg, app_state.tmsi, 4) != 4) {
++			fprintf(stderr, "Invalid TMSI.\n");
++			exit(-1);
++		}
++		break;
++	case 'q':
++		if (strlen(optarg)<MAX_SI) {
++			strcpy(app_state.si_seq, optarg);
++		} else {
++			fprintf(stderr, "Sequence too long.\n");
+ 			exit(-1);
+ 		}
+ 		break;
+@@ -773,7 +1026,7 @@ static int l23_cfg_handle(int c, const char *optarg)
+ static struct l23_app_info info = {
+ 	.copyright	= "Copyright (C) 2010 Harald Welte <laforge@gnumonks.org>\n",
+ 	.contribution	= "Contributions by Holger Hans Peter Freyther\n",
+-	.getopt_string	= "k:",
++	.getopt_string	= "t:q:",
+ 	.cfg_supported	= l23_cfg_supported,
+ 	.cfg_getopt_opt = l23_getopt_options,
+ 	.cfg_handle_opt	= l23_cfg_handle,
+diff --git a/src/host/osmocon/osmocon.c b/src/host/osmocon/osmocon.c
+index 6ad65e2..282ace3 100644
+--- a/src/host/osmocon/osmocon.c
++++ b/src/host/osmocon/osmocon.c
+@@ -226,6 +226,7 @@ int serial_up_to_eleven(void)
+ 	if (rv == 0)
+ 		return 0;
+ 
++#define I_HAVE_A_CP210x
+ #ifdef I_HAVE_A_CP210x /* and I know what I'm doing, I swear ! */
+ 	/* Try closest standard baudrate (CP210x reprogrammed adapters) */
+ 	rv = osmo_serial_set_baudrate(dnload.serial_fd.fd, B460800);
