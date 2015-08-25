@@ -1,0 +1,2 @@
+Modified version of osmocom-bb project (GPRS Support, Communication with BTS via UDP socket using GSMTAP headers):
+https://github.com/clovnrian/osmocom-bb-gprs-no-hw
