@@ -1,6 +1,5 @@
 #!/bin/bash
 
-
 TMSI="$1"
 
 echo -n "$TMSI" | grep -qE "^[0-9a-fA-F]{8}$"
@@ -13,3 +12,5 @@ TMSI_HEX="$(echo $TMSI | sed -re 's,([0-9a-fA-F]{2})([0-9a-fA-F]{2})([0-9a-fA-F]
 
 DATA="\x00\x04${TMSI_HEX}"
 echo -e "$DATA" | nc -U /tmp/osmocom_mi
+
+
